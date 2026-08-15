@@ -1,0 +1,4 @@
+{
+  "apiBase": "http://YOUR-SERVER-ADDRESS:4000/api",
+  "machineApiKey": "paste-this-machines-api-key-from-the-admin-panel"
+}

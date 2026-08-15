@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Factory Tracker</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Top bar: app title, sync status, and window controls (minimize/maximize/close) -->
+  <div class="top-bar">
+    <div class="top-bar-title">Factory Tracker</div>
+    <div class="sync-status" id="sync-bar">
+      <span class="dot" id="sync-dot"></span>
+      <span id="sync-text">Starting…</span>
+    </div>
+    <div class="window-controls">
+      <button class="win-btn" id="win-minimize" title="Minimize">&#8211;</button>
+      <button class="win-btn" id="win-maximize" title="Maximize">&#9633;</button>
+      <button class="win-btn close" id="win-close" title="Close">&#10005;</button>
+    </div>
+  </div>
+
+  <div class="app-body">
+
+    <!-- Fatal config error (e.g. config.json missing on a freshly set-up PC) -->
+    <section id="screen-error" class="screen hidden">
+      <div class="center-box">
+        <h1>Setup needed</h1>
+        <p id="error-message" class="error-text"></p>
+        <p class="hint">Ask an admin to give you this machine's API key from the Machines page,
+           then put it in config.json next to the app.</p>
+      </div>
+    </section>
+
+    <!-- Operator ID entry -->
+    <section id="screen-login" class="screen hidden">
+      <div class="center-box">
+        <div class="machine-label" id="login-machine-name">—</div>
+        <h1>Enter your ID number</h1>
+        <input id="login-input" class="big-input" type="text" inputmode="numeric" placeholder="e.g. 1001" autofocus />
+        <div id="login-error" class="error-text"></div>
+        <div class="keypad" id="keypad"></div>
+        <button class="btn huge" id="login-submit">Continue</button>
+      </div>
+    </section>
+
+    <!-- Home: operator identified, no active job -->
+    <section id="screen-home" class="screen hidden">
+      <div class="topline">
+        <div>
+          <div class="machine-label" id="home-machine-name">—</div>
+          <div class="operator-label">Operator: <strong id="home-operator-name">—</strong></div>
+        </div>
+        <button class="btn secondary" id="logout-btn">Switch operator</button>
+      </div>
+      <div class="center-box">
+        <button class="btn huge start" id="start-job-btn">▶ Start New Job</button>
+      </div>
+      <div class="recent-panel">
+        <div class="section-title">Recent on this machine</div>
+        <div id="recent-list" class="recent-list"></div>
+      </div>
+    </section>
+
+    <!-- Start form: dynamic fields for this machine -->
+    <section id="screen-start-form" class="screen hidden">
+      <div class="topline">
+        <div class="machine-label" id="form-machine-name">—</div>
+        <button class="btn secondary" id="form-cancel-btn">Cancel</button>
+      </div>
+      <div class="form-box">
+        <h1>Before you start…</h1>
+        <div id="dynamic-fields"></div>
+        <div id="form-error" class="error-text"></div>
+        <button class="btn huge start" id="form-submit-btn">▶ Start</button>
+      </div>
+    </section>
+
+    <!-- Running / paused view -->
+    <section id="screen-running" class="screen hidden">
+      <div class="topline">
+        <div class="machine-label" id="run-machine-name">—</div>
+        <div class="operator-label" id="run-operator-name">—</div>
+      </div>
+      <div class="center-box">
+        <div class="status-pill" id="run-status-pill">RUNNING</div>
+        <div class="timer" id="run-timer">00:00:00</div>
+        <div id="run-fields" class="tag-list"></div>
+        <div class="run-actions">
+          <button class="btn huge pause" id="pause-btn">⏸ Pause</button>
+          <button class="btn huge resume hidden" id="resume-btn">▶ Resume</button>
+          <button class="btn huge stop" id="stop-btn">■ Stop</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pause screen: same layout language as the Start form -->
+    <section id="screen-pause-form" class="screen hidden">
+      <div class="topline">
+        <div class="machine-label" id="pause-form-machine-name">—</div>
+        <button class="btn secondary" id="pause-form-cancel-btn">Cancel</button>
+      </div>
+      <div class="form-box">
+        <h1>Why are you pausing?</h1>
+        <div id="pause-reason-list" class="reason-list"></div>
+        <div id="pause-form-error" class="error-text"></div>
+      </div>
+    </section>
+
+    <!-- Stop screen: same layout language as the Start form -->
+    <section id="screen-stop-form" class="screen hidden">
+      <div class="topline">
+        <div class="machine-label" id="stop-form-machine-name">—</div>
+        <button class="btn secondary" id="stop-form-cancel-btn">Cancel</button>
+      </div>
+      <div class="form-box">
+        <h1 id="stop-form-title">Job finished?</h1>
+
+        <div class="stop-choice" id="stop-choice-row">
+          <button class="btn huge start" id="stop-finished-btn">✓ Finished</button>
+          <button class="btn huge secondary" id="stop-incomplete-btn">Incomplete / Cancelled</button>
+        </div>
+
+        <div id="stop-reason-section" class="hidden">
+          <div class="section-title">Reason</div>
+          <div id="stop-reason-list" class="reason-list"></div>
+        </div>
+
+        <div id="stop-fields-section" class="hidden">
+          <div id="stop-dynamic-fields"></div>
+          <div id="stop-fields-error" class="error-text"></div>
+          <button class="btn huge" id="stop-fields-continue-btn">Continue</button>
+        </div>
+
+        <div id="stop-note-section" class="hidden">
+          <label class="field-label">Note (optional)</label>
+          <input id="stop-note-input" class="text-input" type="text" />
+          <div id="stop-form-error" class="error-text"></div>
+          <button class="btn huge" id="stop-confirm-btn">Confirm Stop</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

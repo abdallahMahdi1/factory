@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: factory-tracker-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DATABASE_PATH
+        value: ./data.db
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OFFLINE_ALERT_MINUTES
+        value: 20
+      - key: LONG_SESSION_ALERT_HOURS
+        value: 14
+
+  - type: web
+    name: factory-tracker-admin
+    runtime: static
+    plan: free
+    rootDir: admin-web
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Set this AFTER the backend service deploys and you know its real
+      # URL (Render shows it on the backend service's page) — e.g.
+      # https://factory-tracker-backend.onrender.com/api. Render's
+      # cross-service URL linking for static sites isn't reliable enough
+      # to automate here, so this one env var is set by hand, once.
+      - key: VITE_API_BASE
+        sync: false

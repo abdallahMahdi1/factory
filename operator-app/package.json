@@ -1,0 +1,37 @@
+{
+  "name": "factory-tracker-operator-app",
+  "version": "1.0.0",
+  "description": "Shop-floor desktop app: start/pause/stop time tracking, works fully offline",
+  "main": "src/main.js",
+  "author": "Factory Tracker",
+  "scripts": {
+    "start": "electron .",
+    "dev": "FT_DEV=1 electron .",
+    "test": "node test/test-offline-flow.js",
+    "build": "electron-builder --win --publish=never"
+  },
+  "devDependencies": {
+    "electron": "^32.3.3",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.factorytracker.operator",
+    "productName": "Factory Tracker",
+    "directories": { "output": "dist" },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "config.example.json"
+    ],
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "signAndEditExecutable": false
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "mac": {
+      "target": "dmg"
+    }
+  }
+}
