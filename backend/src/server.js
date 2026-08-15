@@ -12,6 +12,24 @@ const sessionRoutes = require("./routes/sessions");
 const dashboardRoutes = require("./routes/dashboard");
 const deviceRoutes = require("./routes/device");
 
+// Auto-seed on boot if there's no admin login yet. This exists specifically
+// for hosts like Render's free tier where Shell access (needed to run
+// `node scripts/seed.js` by hand) isn't available — the seed script is
+// fully idempotent (every insert checks for an existing row first), so
+// calling it on every startup is safe even if the process restarts
+// repeatedly; it's a no-op once real data already exists.
+// Set SKIP_AUTO_SEED=1 to disable this (e.g. on a production deployment
+// where you don't want any automatic writes to the database at boot).
+function autoSeedIfEmpty() {
+  if (process.env.SKIP_AUTO_SEED === "1") return;
+  const db = require("./lib/db");
+  const hasAdmin = db.prepare("SELECT 1 FROM admins LIMIT 1").get();
+  if (hasAdmin) return;
+  console.log("No admin login found — running first-time setup (scripts/seed.js)...");
+  require("../scripts/seed.js");
+}
+autoSeedIfEmpty();
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
