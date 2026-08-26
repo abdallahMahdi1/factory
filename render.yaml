@@ -24,6 +24,15 @@ services:
     rootDir: admin-web
     buildCommand: npm install && npm run build
     staticPublishPath: dist
+    routes:
+      # The admin panel is a client-side React app (React Router) — every
+      # path needs to fall back to index.html so the app's own router can
+      # take over, rather than Render 404ing on any URL that isn't a literal
+      # file on disk (e.g. loading /machines or /sessions directly, or
+      # refreshing the page while on one of them).
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       # Set this AFTER the backend service deploys and you know its real
       # URL (Render shows it on the backend service's page) — e.g.

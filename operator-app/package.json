@@ -23,6 +23,7 @@
       "renderer/**/*",
       "config.example.json"
     ],
+    "afterAllArtifactBuild": "build-hooks/copy-config.js",
     "win": {
       "target": [{ "target": "portable", "arch": ["x64"] }],
       "signAndEditExecutable": false

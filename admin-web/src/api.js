@@ -60,6 +60,15 @@ export const api = {
     // "Import from sheet" flow and by any bulk reorder/regroup edit in the
     // admin UI, so a 30-field machine doesn't need 30 separate requests.
     setFields: (id, fields) => request(`/machines/${id}/fields`, { method: "PUT", body: { fields } }),
+
+    workOrders: {
+      list: (machineId, status) => request(`/machines/${machineId}/work-orders${status ? `?status=${status}` : ""}`),
+      create: (machineId, data) => request(`/machines/${machineId}/work-orders`, { method: "POST", body: data }),
+      update: (machineId, id, data) => request(`/machines/${machineId}/work-orders/${id}`, { method: "PUT", body: data }),
+      remove: (machineId, id) => request(`/machines/${machineId}/work-orders/${id}`, { method: "DELETE" }),
+      reorder: (machineId, orderedIds) => request(`/machines/${machineId}/work-orders/reorder`, { method: "PUT", body: { orderedIds } }),
+      bulkCreate: (machineId, workOrders) => request(`/machines/${machineId}/work-orders/bulk`, { method: "POST", body: { workOrders } }),
+    },
   },
 
   optionLists: {
@@ -80,12 +89,14 @@ export const api = {
 
   pauseReasons: {
     list: () => request("/pause-reasons"),
-    create: (label) => request("/pause-reasons", { method: "POST", body: { label } }),
+    create: (label, code) => request("/pause-reasons", { method: "POST", body: { label, code } }),
+    update: (id, data) => request(`/pause-reasons/${id}`, { method: "PUT", body: data }),
     remove: (id) => request(`/pause-reasons/${id}`, { method: "DELETE" }),
   },
   stopReasons: {
     list: () => request("/stop-reasons"),
-    create: (label) => request("/stop-reasons", { method: "POST", body: { label } }),
+    create: (label, code) => request("/stop-reasons", { method: "POST", body: { label, code } }),
+    update: (id, data) => request(`/stop-reasons/${id}`, { method: "PUT", body: data }),
     remove: (id) => request(`/stop-reasons/${id}`, { method: "DELETE" }),
   },
 

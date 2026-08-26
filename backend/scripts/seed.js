@@ -48,16 +48,23 @@ function main() {
   // --- Master lists ---
   const materials = upsertOptionList("Materials", ["Steel S235", "Aluminum 6061", "Stainless 304", "Brass"]);
   const tools = upsertOptionList("Tools", ["Lathe tool A", "Drill bit 8mm", "Milling cutter 12mm"]);
-  const workOrders = upsertOptionList("Work Orders", ["WO-1001", "WO-1002", "WO-1003"]);
 
   // --- Pause / stop reasons ---
-  for (const label of ["Break", "Waiting for material", "Machine breakdown", "Quality check", "Meeting"]) {
+  // Codes are what the operator actually types on the numeric keypad, so
+  // they're kept short and numeric here — the label is just for the admin
+  // panel and the operator's on-screen confirmation before they submit.
+  for (const [code, label] of [
+    ["01", "Break"], ["02", "Waiting for material"], ["03", "Machine breakdown"],
+    ["04", "Quality check"], ["05", "Meeting"],
+  ]) {
     const exists = db.prepare("SELECT 1 FROM pause_reasons WHERE label = ?").get(label);
-    if (!exists) db.prepare("INSERT INTO pause_reasons (id, label) VALUES (?, ?)").run(uuid(), label);
+    if (!exists) db.prepare("INSERT INTO pause_reasons (id, code, label) VALUES (?, ?, ?)").run(uuid(), code, label);
   }
-  for (const label of ["Job finished", "Cancelled", "Wrong work order", "End of shift"]) {
+  for (const [code, label] of [
+    ["01", "Job finished"], ["02", "Cancelled"], ["03", "Wrong work order"], ["04", "End of shift"],
+  ]) {
     const exists = db.prepare("SELECT 1 FROM stop_reasons WHERE label = ?").get(label);
-    if (!exists) db.prepare("INSERT INTO stop_reasons (id, label) VALUES (?, ?)").run(uuid(), label);
+    if (!exists) db.prepare("INSERT INTO stop_reasons (id, code, label) VALUES (?, ?, ?)").run(uuid(), code, label);
   }
 
   // --- One example machine with a start form, so you can see it working ---
@@ -74,10 +81,13 @@ function main() {
     machine = { id, api_key: apiKey };
 
     const fields = [
-      { label: "Work order", type: "select", listId: workOrders.id, order: 0 },
-      { label: "Material", type: "select", listId: materials.id, order: 1 },
-      { label: "Tool", type: "select", listId: tools.id, order: 2 },
-      { label: "Notes", type: "text", listId: null, order: 3, required: false },
+      // Work order is deliberately NOT a Start-form field here — it's
+      // handled by the dedicated work-order queue instead (see below), so
+      // the operator picks a job from the queue rather than typing/selecting
+      // one that duplicates that info.
+      { label: "Material", type: "select", listId: materials.id, order: 0 },
+      { label: "Tool", type: "select", listId: tools.id, order: 1 },
+      { label: "Notes", type: "text", listId: null, order: 2, required: false },
     ];
     for (const f of fields) {
       db.prepare(
@@ -102,6 +112,16 @@ function main() {
       machine.id
     );
     console.log(`Created example operator "Ahmed Ali" (ID number: 1001), authorized on CNC-01`);
+  }
+
+  // --- One example planned work order, so the queue isn't empty on first look ---
+  const existingWorkOrder = db.prepare("SELECT 1 FROM work_orders WHERE machine_id = ? AND job_no = ?").get(machine.id, "WO-1001");
+  if (!existingWorkOrder) {
+    db.prepare(
+      `INSERT INTO work_orders (id, machine_id, sequence, job_no, description, priority, quantity, created_by)
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?)`
+    ).run(uuid(), machine.id, "WO-1001", "Example planned job", "normal", 10, "seed");
+    console.log(`Created example work order "WO-1001" in the queue for CNC-01`);
   }
 
   console.log("Seed complete.");

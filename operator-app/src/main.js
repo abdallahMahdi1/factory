@@ -9,7 +9,18 @@ const { createSessionManager } = require("./sessionManager");
 // config.json lives NEXT TO the installed app (not bundled inside it), so
 // each shop-floor PC gets its own copy pointing at its own machine, without
 // rebuilding the app per machine. See config.example.json for the format.
-const CONFIG_PATH = process.env.FT_CONFIG_PATH || path.join(app.getPath("exe"), "..", "config.json");
+//
+// IMPORTANT (portable .exe builds): electron-builder's "portable" target
+// self-extracts into a temp folder at launch and runs from there, so
+// app.getPath("exe") resolves to that TEMP location — NOT the folder the
+// person actually double-clicked in. electron-builder sets
+// PORTABLE_EXECUTABLE_DIR specifically to solve this: it's the real,
+// visible folder the portable .exe was launched from, which is where
+// config.json actually lives. Fall back to app.getPath("exe") for
+// non-portable builds (installer-based, or running the unpacked app
+// directly) where PORTABLE_EXECUTABLE_DIR isn't set.
+const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath("exe"));
+const CONFIG_PATH = process.env.FT_CONFIG_PATH || path.join(exeDir, "config.json");
 const FALLBACK_CONFIG_PATH = path.join(__dirname, "..", "config.json"); // for `npm start` in dev
 
 function loadDeviceConfig() {
@@ -46,7 +57,7 @@ function createWindow() {
     minWidth: 820,
     minHeight: 600,
     fullscreen: false,
-    autoHideMenuBar: true, // hides the File/Edit/View menu bar, but keeps minimize/maximize/close
+    frame: false, // no native OS title bar — the in-app top bar (drag region + minimize/maximize/close) is the only one now, instead of stacking on top of a second native one
     title: "Factory Tracker",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -129,8 +140,14 @@ ipcMain.handle("login-operator", (event, idNumber) => {
   return operator;
 });
 
-ipcMain.handle("start-session", (event, { operatorId, operatorName, fieldValues }) => {
-  const session = sessionManager.startSession({ operatorId, operatorName, fieldValues });
+ipcMain.handle("start-session", (event, { operatorId, operatorName, workOrder, runningHourStart }) => {
+  const session = sessionManager.startSession({ operatorId, operatorName, workOrder, runningHourStart });
+  sessionManager.runSyncCycle().then(broadcastStatus);
+  return session;
+});
+
+ipcMain.handle("update-rows", (event, { table, rows }) => {
+  const session = sessionManager.updateRows({ table, rows });
   sessionManager.runSyncCycle().then(broadcastStatus);
   return session;
 });
@@ -147,8 +164,14 @@ ipcMain.handle("resume-session", () => {
   return session;
 });
 
-ipcMain.handle("stop-session", (event, { status, stopReasonId, note, stopFieldValues }) => {
-  const result = sessionManager.stopSession({ status, stopReasonId, note, stopFieldValues });
+ipcMain.handle("stop-session", (event, { status, stopReasonId, note, runningHourEnd }) => {
+  const result = sessionManager.stopSession({ status, stopReasonId, note, runningHourEnd });
+  sessionManager.runSyncCycle().then(broadcastStatus);
+  return result;
+});
+
+ipcMain.handle("delete-session", () => {
+  const result = sessionManager.deleteSession();
   sessionManager.runSyncCycle().then(broadcastStatus);
   return result;
 });
@@ -160,10 +183,9 @@ ipcMain.handle("force-sync", async () => {
 });
 
 // ---- Window controls for the in-app top bar ----
-// autoHideMenuBar removes the native File/Edit menu, but Electron still
-// gives every BrowserWindow a normal OS title bar with minimize/maximize/
-// close by default — the in-app bar below is an extra, always-visible
-// convenience row, not a replacement for the OS chrome.
+// With frame: false, there is no native OS title bar at all — these IPC
+// handlers are the ONLY way to minimize/maximize/close the window, wired
+// to the buttons in the custom top bar.
 ipcMain.handle("window-minimize", () => win?.minimize());
 ipcMain.handle("window-maximize-toggle", () => {
   if (!win) return;

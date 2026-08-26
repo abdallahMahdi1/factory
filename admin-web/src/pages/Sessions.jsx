@@ -164,31 +164,67 @@ function SessionDetail({ sessionId, fieldLookup, pauseReasonLookup, onClose, onS
     );
   }
 
-  let fieldValues = {};
-  try { fieldValues = JSON.parse(session.field_values || "{}"); } catch { /* ignore */ }
-  let stopFieldValues = {};
-  try { stopFieldValues = JSON.parse(session.stop_field_values || "{}"); } catch { /* ignore */ }
+  // Historical sessions (created before the multi-row redesign) stored a
+  // single flat object instead of an array of rows — normalize either
+  // shape so this view never crashes on old data.
+  function parseRows(raw) {
+    if (!raw) return [];
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return []; }
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) return [parsed];
+    return [];
+  }
+  const startRows = parseRows(session.field_values);
+  const stopRows = parseRows(session.stop_field_values);
 
   const gross = grossMinutes(session);
   const pauseTotal = pauseMinutes(session.pauses);
   const segments = buildSegments(session);
 
-  function renderFieldTags(values) {
+  function displayValue(fieldId, value) {
+    const f = fieldLookup.fieldsById[fieldId];
+    return f && f.type === "select" ? (fieldLookup.optionItemsById[value] || value) : value;
+  }
+
+  // Renders one table: a column per field this machine has configured for
+  // that stage, a row per entry the operator added (minimum 1 once the job
+  // has started). Columns are pulled from fieldLookup so even a value from
+  // a since-removed field still shows under a generic header rather than
+  // silently vanishing.
+  function renderRowsTable(rows, stageFields) {
+    if (rows.length === 0) return <div className="hint">No rows yet.</div>;
+    const columnIds = stageFields.length > 0 ? stageFields.map((f) => f.id) : Object.keys(rows[0] || {});
     return (
-      <div className="tag-list" style={{ marginTop: 4, marginBottom: 10 }}>
-        {Object.entries(values).map(([fieldId, value]) => {
-          const f = fieldLookup.fieldsById[fieldId];
-          const label = f ? f.label : "Field";
-          const display = f && f.type === "select" ? (fieldLookup.optionItemsById[value] || value) : value;
-          return <span className="tag" key={fieldId}>{label}: {String(display)}</span>;
-        })}
-      </div>
+      <table style={{ marginBottom: 4 }}>
+        <thead>
+          <tr>
+            <th>#</th>
+            {columnIds.map((fid) => <th key={fid}>{fieldLookup.fieldsById[fid]?.label || "Field"}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              <td className="mono-data">{i + 1}</td>
+              {columnIds.map((fid) => <td key={fid}>{row[fid] != null && row[fid] !== "" ? String(displayValue(fid, row[fid])) : "—"}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     );
   }
 
+  const startFields = Object.values(fieldLookup.fieldsById)
+    .filter((f) => f.machine_id === session.machine_id && f.stage === "start")
+    .sort((a, b) => a.sort_order - b.sort_order);
+  const stopFields = Object.values(fieldLookup.fieldsById)
+    .filter((f) => f.machine_id === session.machine_id && f.stage === "stop")
+    .sort((a, b) => a.sort_order - b.sort_order);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
         <h2>{session.machine_name} · {session.operator_name}</h2>
 
         <div className="section-title">Timeline</div>
@@ -199,18 +235,11 @@ function SessionDetail({ sessionId, fieldLookup, pauseReasonLookup, onClose, onS
         </div>
         <Timeline segments={segments} pauseReasonLookup={pauseReasonLookup} />
 
-        {Object.keys(fieldValues).length > 0 && (
-          <>
-            <div className="section-title">Input (recorded at start)</div>
-            {renderFieldTags(fieldValues)}
-          </>
-        )}
-        {Object.keys(stopFieldValues).length > 0 && (
-          <>
-            <div className="section-title">Output (recorded at finish)</div>
-            {renderFieldTags(stopFieldValues)}
-          </>
-        )}
+        <div className="section-title">Input ({startRows.length} row{startRows.length === 1 ? "" : "s"})</div>
+        {renderRowsTable(startRows, startFields)}
+
+        <div className="section-title">Output ({stopRows.length} row{stopRows.length === 1 ? "" : "s"})</div>
+        {renderRowsTable(stopRows, stopFields)}
 
         <div className="section-title">Correct this record</div>
         <div className="hint" style={{ marginBottom: 10 }}>

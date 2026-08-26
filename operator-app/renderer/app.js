@@ -5,16 +5,22 @@
 let state = { config: null, activeSession: null, status: null, recentLocalSessions: [] };
 let currentOperator = null;
 let timerHandle = null;
-let pendingStop = { status: null, reasonId: null };
+let pendingStop = { status: null, reasonId: null, runningHourEnd: null };
+let selectedWorkOrder = null; // the work order picked from the queue, carried through the Start form
+let queueTab = "pending"; // "pending" | "finished" — which list the Home screen is showing
 // When set, render() shows this screen instead of computing one from state —
 // used for the Pause and Stop screens, which are reached FROM screen-running
 // but aren't a direct function of activeSession/currentOperator the way the
 // other screens are.
 let screenOverride = null;
+// Debounce timers for row-table cell edits, keyed by table name ("start"/
+// "stop") — typing in a cell doesn't sync on every keystroke, it waits
+// briefly after the operator stops typing, same idea as autosave anywhere.
+const rowSaveTimers = {};
 
 const SCREENS = [
   "screen-error", "screen-login", "screen-home", "screen-start-form",
-  "screen-running", "screen-pause-form", "screen-stop-form",
+  "screen-running", "screen-pause-form", "screen-stop-form", "screen-queue-view",
 ];
 function showScreen(id) {
   SCREENS.forEach((s) => document.getElementById(s).classList.toggle("hidden", s !== id));
@@ -28,11 +34,6 @@ function fmtHMS(ms) {
   const m = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
   const s = String(total % 60).padStart(2, "0");
   return `${h}:${m}:${s}`;
-}
-function fmtMinutesShort(mins) {
-  const m = Math.max(0, Math.round(mins));
-  const h = Math.floor(m / 60);
-  return h > 0 ? `${h}h ${m % 60}m` : `${m}m`;
 }
 // Elapsed "worked" time = gross time minus every pause interval (using "now"
 // for any pause that's still open) — this naturally freezes the number
@@ -77,102 +78,307 @@ function wireWindowControls() {
 }
 
 // ---------- screen renderers ----------
-function renderHome() {
+function fmtDate(iso) {
+  if (!iso) return null;
+  // Work order due dates are plain "YYYY-MM-DD" strings (a date, not a
+  // timestamp) — parse them as local, not UTC-shifted-then-displayed-wrong.
+  const d = new Date(iso.length <= 10 ? iso + "T00:00:00" : iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function renderQueueItem(wo, clickable, index, isActive) {
+  const item = document.createElement("div");
+  item.className = `queue-item${clickable ? "" : " disabled"}${isActive ? " current" : ""}`;
+  const metaParts = [];
+  if (wo.quantity != null) metaParts.push(`Qty ${wo.quantity}`);
+  if (wo.dueDate) metaParts.push(`Due ${fmtDate(wo.dueDate)}`);
+  if (!clickable && wo.status === "in_progress" && !isActive) metaParts.push("Already in progress");
+  item.innerHTML = `
+    <span class="qi-index">${index}</span>
+    <div class="qi-main">
+      <div class="qi-job">${wo.jobNo}</div>
+      ${wo.description ? `<div class="qi-desc">${wo.description}</div>` : ""}
+      ${metaParts.length ? `<div class="qi-meta">${metaParts.join(" · ")}</div>` : ""}
+    </div>
+    ${isActive ? `<span class="current-badge">● RUNNING NOW</span>` : `<span class="priority-pill ${wo.priority}">${wo.priority}</span>`}
+    ${clickable ? `<span class="qi-arrow">›</span>` : ""}
+  `;
+  if (clickable) item.addEventListener("click", () => openStartFormForWorkOrder(wo));
+  return item;
+}
+
+// Read-only queue view, reachable from the Running screen — the operator
+// can see what's next in line while a job is active, but can't tap into
+// starting anything from here (only one job runs at a time on this
+// machine). The currently active work order is highlighted wherever it
+// falls in the list, not necessarily first.
+function renderQueueView() {
+  $("queue-view-machine-name").textContent = state.config?.machine?.name || "—";
+  const list = $("queue-view-list");
+  list.innerHTML = "";
+  const pendingItems = state.config?.workOrders?.pending || [];
+  const activeWoId = state.activeSession?.workOrderId;
+  if (pendingItems.length === 0) {
+    list.innerHTML = `<div class="queue-empty">No other work orders planned yet.</div>`;
+  } else {
+    pendingItems.forEach((wo, i) => {
+      list.appendChild(renderQueueItem(wo, false, i + 1, wo.id === activeWoId));
+    });
+  }
+}
+function openQueueView() {
+  renderQueueView();
+  screenOverride = "screen-queue-view";
+  render();
+}
+function closeQueueView() {
+  screenOverride = null;
+  render();
+}
+
+// Manually forces a sync right now (rather than waiting for the ~15s
+// background cycle) and re-renders the queue with whatever comes back —
+// mainly for "a supervisor just added/reordered a job, show it now."
+async function refreshQueue() {
+  const btn = $("queue-refresh-btn");
+  const icon = btn.querySelector(".refresh-icon");
+  btn.disabled = true;
+  icon.classList.add("spinning");
+  try {
+    await window.api.forceSync();
+    const fresh = await window.api.getState();
+    state = { ...state, ...fresh };
+    renderQueue();
+  } catch (err) {
+    console.error("Refresh failed:", err);
+  } finally {
+    btn.disabled = false;
+    icon.classList.remove("spinning");
+  }
+}
+
+function renderQueue() {
   $("home-machine-name").textContent = state.config?.machine?.name || "—";
   $("home-operator-name").textContent = currentOperator?.name || "—";
-  const list = $("recent-list");
-  list.innerHTML = "";
-  if (state.recentLocalSessions.length === 0) {
-    list.innerHTML = `<div class="hint">Nothing recorded on this machine yet today.</div>`;
+
+  $("queue-tab-pending").classList.toggle("active", queueTab === "pending");
+  $("queue-tab-finished").classList.toggle("active", queueTab === "finished");
+  $("queue-list-pending").classList.toggle("hidden", queueTab !== "pending");
+  $("queue-list-finished").classList.toggle("hidden", queueTab !== "finished");
+
+  const pending = $("queue-list-pending");
+  pending.innerHTML = "";
+  const pendingItems = state.config?.workOrders?.pending || [];
+  if (pendingItems.length === 0) {
+    pending.innerHTML = `<div class="queue-empty">No work orders planned for this machine yet.<br>Ask your supervisor to add one.</div>`;
   } else {
-    for (const s of state.recentLocalSessions) {
-      const row = document.createElement("div");
-      row.className = "recent-item";
-      row.innerHTML = `<span>${s.operator_name} · ${fmtMinutesShort(s.gross_minutes)}</span><span class="status">${s.status}</span>`;
-      list.appendChild(row);
-    }
+    pendingItems.forEach((wo, i) => {
+      pending.appendChild(renderQueueItem(wo, wo.status === "pending", i + 1));
+    });
+  }
+
+  const finished = $("queue-list-finished");
+  finished.innerHTML = "";
+  const finishedItems = state.config?.workOrders?.finished || [];
+  if (finishedItems.length === 0) {
+    finished.innerHTML = `<div class="queue-empty">Nothing finished yet.</div>`;
+  } else {
+    finishedItems.forEach((wo, i) => {
+      finished.appendChild(renderQueueItem(wo, false, i + 1));
+    });
   }
 }
 
-// Renders a set of dynamic fields into `container`, grouped visually by
-// each field's groupLabel (e.g. "Input", "Raw Materials") when present —
-// this is what makes a 30-field machine (imported from a real production
-// sheet) readable instead of one long undifferentiated list. Shared by both
-// the Start form and the Stop form; only the field list passed in differs.
-function renderDynamicFields(container, fields) {
-  container.innerHTML = "";
-  let currentGroup = undefined; // undefined = "no group started yet", distinct from null/"" = "ungrouped"
-  for (const field of fields) {
-    if (field.groupLabel !== currentGroup) {
-      currentGroup = field.groupLabel;
-      if (currentGroup) {
-        const heading = document.createElement("div");
-        heading.className = "field-group-heading";
-        heading.textContent = currentGroup;
-        container.appendChild(heading);
-      }
-    }
-
-    const group = document.createElement("div");
-    group.className = "field-group";
-    const label = document.createElement("label");
-    label.className = "field-label";
-    label.textContent = field.label + (field.required ? " *" : "");
-    group.appendChild(label);
-
-    let input;
-    if (field.type === "select") {
-      input = document.createElement("select");
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "— Select —";
-      input.appendChild(placeholder);
-      for (const opt of field.options || []) {
-        const o = document.createElement("option");
-        o.value = opt.id;
-        o.textContent = opt.value;
-        input.appendChild(o);
-      }
-    } else if (field.type === "number") {
-      input = document.createElement("input");
-      input.className = "text-input";
-      input.type = "number";
-      input.step = "any"; // measurements like 2.35mm need decimals, not just whole numbers
-      input.inputMode = "decimal";
-    } else {
-      input = document.createElement("input");
-      input.className = "text-input";
-      input.type = "text";
-    }
-    input.dataset.fieldId = field.id;
-    input.dataset.fieldType = field.type;
-    input.dataset.required = field.required ? "1" : "0";
-    group.appendChild(input);
-    container.appendChild(group);
-  }
+// Shared read-only summary card for a work order — used at the top of the
+// Start form (before the job begins) and on the Running screen (once it
+// has), so the operator always sees which job they're looking at.
+function renderWorkOrderContext(container, wo) {
+  if (!wo) { container.innerHTML = ""; return; }
+  const metaParts = [];
+  if (wo.quantity != null) metaParts.push(`Qty: <strong>${wo.quantity}</strong>`);
+  if (wo.dueDate) metaParts.push(`Due: <strong>${fmtDate(wo.dueDate)}</strong>`);
+  if (wo.process) metaParts.push(`Process: <strong>${wo.process}</strong>`);
+  if (wo.inputDiameter != null) metaParts.push(`Input dia: <strong>${wo.inputDiameter}</strong>`);
+  if (wo.totalTolerance) metaParts.push(`Tolerance: <strong>${wo.totalTolerance}</strong>`);
+  const notes = [wo.specialInstruction, wo.remarks].filter(Boolean);
+  container.innerHTML = `
+    <div class="wo-job">${wo.jobNo} <span class="priority-pill ${wo.priority}">${wo.priority}</span></div>
+    ${wo.description ? `<div class="wo-desc">${wo.description}</div>` : ""}
+    ${metaParts.length ? `<div class="wo-meta">${metaParts.map((p) => `<span>${p}</span>`).join("")}</div>` : ""}
+    ${notes.map((n) => `<div class="wo-note">⚠ ${n}</div>`).join("")}
+  `;
 }
 
-// Reads back whatever renderDynamicFields put into `container`, validating
-// required fields. Returns null (and sets the error text) if something
-// required is missing.
-function collectDynamicFields(container, errorEl) {
-  const inputs = container.querySelectorAll("[data-field-id]");
-  const values = {};
-  for (const input of inputs) {
-    const value = input.value;
-    if (input.dataset.required === "1" && !value) {
-      if (errorEl) errorEl.textContent = "Please fill in every required field.";
-      return null;
+function fieldLookup(fieldId) {
+  return (state.config?.fields || []).find((f) => f.id === fieldId)
+    || (state.config?.stopFields || []).find((f) => f.id === fieldId);
+}
+
+// Builds one editable form control (text/number/select) for a single field,
+// pre-filled with `value` — used for each cell in a row table. Kept as its
+// own function since both the Start table and End table need identically-
+// behaving cells, just with a different field list and row array.
+function buildFieldInput(field, value) {
+  let input;
+  if (field.type === "select") {
+    input = document.createElement("select");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "— Select —";
+    input.appendChild(placeholder);
+    for (const opt of field.options || []) {
+      const o = document.createElement("option");
+      o.value = opt.id;
+      o.textContent = opt.value;
+      if (opt.id === value) o.selected = true;
+      input.appendChild(o);
     }
-    if (value !== "") values[input.dataset.fieldId] = value;
+  } else if (field.type === "number") {
+    input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.inputMode = "decimal";
+    if (value != null) input.value = value;
+  } else {
+    input = document.createElement("input");
+    input.type = "text";
+    if (value != null) input.value = value;
   }
-  return values;
+  return input;
+}
+
+// Renders one full row-table (Start table or End table) into `tableEl`,
+// with one column per field this machine has configured for that stage,
+// and one row per entry in `rows`. Every cell edit and every add/remove
+// row immediately updates the in-memory session (so validation, e.g. "at
+// least 1 row", always sees the latest state) and schedules/perform a save.
+function renderRowTable(tableEl, fields, rows, tableName) {
+  tableEl.innerHTML = "";
+  const addBtn = $(tableName === "start" ? "start-table-add-row-btn" : "stop-table-add-row-btn");
+  if (fields.length === 0) {
+    addBtn.disabled = true;
+    const tbody = document.createElement("tbody");
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.className = "table-empty";
+    td.colSpan = 3;
+    td.textContent = "No columns configured here yet — ask your supervisor to add some in the admin panel.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    tableEl.appendChild(tbody);
+    return;
+  }
+  addBtn.disabled = false;
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  headRow.innerHTML = `<th></th>${fields.map((f) => `<th>${f.label}${f.required ? " *" : ""}</th>`).join("")}<th></th>`;
+  thead.appendChild(headRow);
+  tableEl.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row, rowIndex) => {
+    const tr = document.createElement("tr");
+    const indexCell = document.createElement("td");
+    indexCell.className = "row-index";
+    indexCell.textContent = rowIndex + 1;
+    tr.appendChild(indexCell);
+
+    for (const field of fields) {
+      const cell = document.createElement("td");
+      const input = buildFieldInput(field, row[field.id]);
+      input.addEventListener("input", () => {
+        row[field.id] = input.value;
+        scheduleRowSave(tableName);
+      });
+      input.addEventListener("change", () => {
+        row[field.id] = input.value;
+        scheduleRowSave(tableName);
+      });
+      cell.appendChild(input);
+      tr.appendChild(cell);
+    }
+
+    const actionCell = document.createElement("td");
+    const delBtn = document.createElement("button");
+    delBtn.className = "row-delete-btn";
+    delBtn.textContent = "✕";
+    delBtn.title = "Remove row";
+    delBtn.disabled = rows.length <= 1; // minimum 1 row always required
+    delBtn.addEventListener("click", () => removeRow(tableName, rowIndex));
+    actionCell.appendChild(delBtn);
+    tr.appendChild(actionCell);
+
+    tbody.appendChild(tr);
+  });
+  tableEl.appendChild(tbody);
+}
+
+function currentRows(tableName) {
+  const session = state.activeSession;
+  if (!session) return [];
+  return tableName === "start" ? session.startRows : session.stopRows;
+}
+function currentFields(tableName) {
+  return tableName === "start" ? (state.config?.fields || []) : (state.config?.stopFields || []);
+}
+
+function scheduleRowSave(tableName) {
+  clearTimeout(rowSaveTimers[tableName]);
+  rowSaveTimers[tableName] = setTimeout(() => saveRows(tableName), 900);
+}
+function flushPendingRowSaves() {
+  for (const table of Object.keys(rowSaveTimers)) {
+    if (rowSaveTimers[table]) {
+      clearTimeout(rowSaveTimers[table]);
+      saveRows(table);
+    }
+  }
+}
+async function saveRows(tableName) {
+  const rows = currentRows(tableName);
+  try {
+    await window.api.updateRows({ table: tableName, rows });
+    // Deliberately NOT reassigning state.activeSession from the response
+    // here. The renderer's local rows array is already the source of
+    // truth — the <input> elements' event listeners are closed over THESE
+    // exact row objects. Swapping in the IPC round-trip's freshly
+    // deserialized copy would silently orphan those closures: any typing
+    // that happens after the swap would mutate objects no longer
+    // referenced by state.activeSession, and the next save would send
+    // stale data without any error ever appearing.
+  } catch (err) {
+    console.error(`Failed to save ${tableName} table rows:`, err);
+  }
+}
+function addRow(tableName) {
+  const rows = currentRows(tableName);
+  rows.push({});
+  renderRunningTables(); // re-render immediately so the new row appears
+  saveRows(tableName); // no debounce — an add should feel instant, not laggy
+}
+function removeRow(tableName, index) {
+  const rows = currentRows(tableName);
+  if (rows.length <= 1) return; // minimum 1 row enforced
+  rows.splice(index, 1);
+  renderRunningTables();
+  saveRows(tableName);
+}
+function renderRunningTables() {
+  renderRowTable($("start-table"), currentFields("start"), currentRows("start"), "start");
+  renderRowTable($("stop-table"), currentFields("stop"), currentRows("stop"), "stop");
 }
 
 function renderStartForm() {
   $("form-machine-name").textContent = state.config?.machine?.name || "—";
   $("form-error").textContent = "";
-  renderDynamicFields($("dynamic-fields"), state.config?.fields || []);
+  renderWorkOrderContext($("form-wo-context"), selectedWorkOrder);
+}
+
+function fmtClock(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function renderRunning() {
@@ -188,28 +394,15 @@ function renderRunning() {
   $("pause-btn").classList.toggle("hidden", paused);
   $("resume-btn").classList.toggle("hidden", !paused);
 
-  const tagList = $("run-fields");
-  tagList.innerHTML = "";
-  for (const [fieldId, value] of Object.entries(session.fieldValues || {})) {
-    const field = fieldLookup(fieldId);
-    if (!field || !value) continue;
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.innerHTML = `${field.label}: <strong>${optionText(field, value)}</strong>`;
-    tagList.appendChild(tag);
-  }
-}
+  renderWorkOrderContext($("run-wo-context"), session.workOrderSnapshot);
 
-function fieldLookup(fieldId) {
-  return (state.config?.fields || []).find((f) => f.id === fieldId)
-    || (state.config?.stopFields || []).find((f) => f.id === fieldId);
-}
-function optionText(field, value) {
-  if (field?.type === "select") {
-    const opt = (field.options || []).find((o) => o.id === value);
-    return opt ? opt.value : value;
-  }
-  return value;
+  // No manual counter entry — the start time is the real clock timestamp
+  // recorded the moment Start was tapped, and the worked-time duration
+  // above is computed automatically (start subtracted from now, minus any
+  // pauses). Nothing for the operator to read off a machine and type in.
+  $("run-hour-summary").textContent = `Started at ${fmtClock(session.startedAt)}`;
+
+  renderRunningTables();
 }
 
 function tickTimer() {
@@ -234,10 +427,11 @@ function render() {
     renderRunning();
     showScreen("screen-running");
   } else if (!currentOperator) {
+    $("login-machine-name").textContent = state.config?.machine?.name || "—";
     showScreen("screen-login");
     setTimeout(() => $("login-input").focus(), 50);
   } else {
-    renderHome();
+    renderQueue();
     showScreen("screen-home");
   }
 }
@@ -276,126 +470,184 @@ async function submitLogin() {
 }
 
 // ---------- start form ----------
-function openStartForm() {
+function openStartFormForWorkOrder(wo) {
+  selectedWorkOrder = wo;
   renderStartForm();
   showScreen("screen-start-form");
 }
 
 async function submitStartForm() {
-  const fieldValues = collectDynamicFields($("dynamic-fields"), $("form-error"));
-  if (fieldValues === null) return;
+  if (!selectedWorkOrder) {
+    $("form-error").textContent = "No work order selected — go back and pick one from the queue.";
+    return;
+  }
   try {
     const session = await window.api.startSession({
       operatorId: currentOperator.id,
       operatorName: currentOperator.name,
-      fieldValues,
+      workOrder: selectedWorkOrder,
     });
     state.activeSession = session;
+    selectedWorkOrder = null;
     render();
   } catch (err) {
     $("form-error").textContent = err.message;
   }
 }
 
+// ---------- shared reason-code entry (Pause, and Stop/Incomplete) ----------
+// Renders a numeric keypad + input into `containerEl`, matching the exact
+// look of the login screen's ID keypad. The operator types a short code
+// (e.g. "01"); as they type, a live preview shows which reason it matches
+// so they can confirm before submitting — this is what makes it safe to
+// use "type a code" instead of "tap a list" even with codes the operator
+// has to remember. Returns { setError } so the caller can report back an
+// async failure (e.g. the pause API call itself failing) into the same UI.
+function buildCodeEntryUI(containerEl, { reasons, onMatch, placeholder }) {
+  containerEl.innerHTML = `
+    <input class="big-input code-input" type="text" inputmode="numeric" placeholder="${placeholder || "e.g. 01"}" autofocus />
+    <div class="code-match hidden"></div>
+    <div class="error-text code-error"></div>
+    <div class="keypad code-keypad"></div>
+    <button class="btn huge submit-code-btn">Continue</button>
+  `;
+  const input = containerEl.querySelector(".code-input");
+  const matchEl = containerEl.querySelector(".code-match");
+  const errorEl = containerEl.querySelector(".code-error");
+  const keypad = containerEl.querySelector(".code-keypad");
+  const submitBtn = containerEl.querySelector(".submit-code-btn");
+
+  function findMatch() {
+    const code = input.value.trim();
+    if (!code) return null;
+    return (reasons || []).find((r) => r.code && r.code === code) || null;
+  }
+  function updatePreview() {
+    errorEl.textContent = "";
+    const match = findMatch();
+    if (match) {
+      matchEl.innerHTML = `✓ <strong>${match.code}</strong> · ${match.label}`;
+      matchEl.classList.remove("hidden");
+    } else {
+      matchEl.classList.add("hidden");
+    }
+  }
+
+  const layout = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "back"];
+  for (const key of layout) {
+    const btn = document.createElement("button");
+    btn.textContent = key === "back" ? "⌫" : key === "clear" ? "C" : key;
+    btn.addEventListener("click", () => {
+      if (key === "clear") input.value = "";
+      else if (key === "back") input.value = input.value.slice(0, -1);
+      else input.value += key;
+      updatePreview();
+      input.focus();
+    });
+    keypad.appendChild(btn);
+  }
+
+  function submit() {
+    const match = findMatch();
+    if (!match) {
+      errorEl.textContent = reasons && reasons.length
+        ? "No reason found for that code — check with your supervisor."
+        : "No reason codes are set up for this machine yet — ask your supervisor.";
+      return;
+    }
+    onMatch(match);
+  }
+  submitBtn.addEventListener("click", submit);
+  input.addEventListener("input", updatePreview);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  setTimeout(() => input.focus(), 50);
+
+  return { setError: (msg) => { errorEl.textContent = msg; } };
+}
+
 // ---------- pause screen ----------
 function openPauseScreen() {
+  flushPendingRowSaves();
   $("pause-form-machine-name").textContent = state.config?.machine?.name || "—";
-  $("pause-form-error").textContent = "";
-  const list = $("pause-reason-list");
-  list.innerHTML = "";
-  for (const reason of state.config?.pauseReasons || []) {
-    const btn = document.createElement("button");
-    btn.textContent = reason.label;
-    btn.addEventListener("click", async () => {
+  const widget = buildCodeEntryUI($("pause-reason-list"), {
+    reasons: state.config?.pauseReasons || [],
+    onMatch: async (reason) => {
       try {
         const session = await window.api.pauseSession({ reasonId: reason.id });
         state.activeSession = session;
         screenOverride = null;
         render();
       } catch (err) {
-        $("pause-form-error").textContent = err.message;
+        widget.setError(err.message);
       }
-    });
-    list.appendChild(btn);
-  }
+    },
+  });
   screenOverride = "screen-pause-form";
   render();
 }
 
 // ---------- stop screen ----------
 function resetStopForm() {
-  pendingStop = { status: null, reasonId: null, stopFieldValues: {} };
+  pendingStop = { status: null, reasonId: null };
   $("stop-reason-section").classList.add("hidden");
-  $("stop-fields-section").classList.add("hidden");
-  $("stop-note-section").classList.add("hidden");
   $("stop-choice-row").classList.remove("hidden");
-  $("stop-note-input").value = "";
   $("stop-form-error").textContent = "";
-  $("stop-fields-error").textContent = "";
+  $("stop-choice-error").textContent = "";
   $("stop-form-title").textContent = "Job finished?";
 }
 function openStopScreen() {
+  flushPendingRowSaves();
   $("stop-form-machine-name").textContent = state.config?.machine?.name || "—";
   resetStopForm();
   screenOverride = "screen-stop-form";
   render();
 }
-// After Finished/Incomplete (and, for Incomplete, after picking a reason),
-// the flow lands here: show this machine's stop-stage fields (Output,
-// Performance, Scrap, etc. — whatever the admin configured) if it has any,
-// otherwise skip straight to the note/confirm step.
-function goToStopFieldsOrNote() {
-  const stopFields = state.config?.stopFields || [];
-  if (stopFields.length > 0) {
-    $("stop-fields-error").textContent = "";
-    renderDynamicFields($("stop-dynamic-fields"), stopFields);
-    $("stop-fields-section").classList.remove("hidden");
-  } else {
-    $("stop-note-section").classList.remove("hidden");
-  }
-}
+// Tapping Finished (once the row check passes) or entering a valid
+// Incomplete reason code both stop the job immediately — there's no
+// separate note/confirm step in between anymore, just one deliberate tap.
 function chooseStopStatus(status) {
+  if (status === "finished") {
+    const session = state.activeSession;
+    const startCount = (session?.startRows || []).length;
+    const stopCount = (session?.stopRows || []).length;
+    if (startCount < 1 || stopCount < 1) {
+      $("stop-choice-error").textContent =
+        "Add at least one row to both the Input table and the Output table before finishing.";
+      return;
+    }
+  }
+  $("stop-choice-error").textContent = "";
   pendingStop.status = status;
   $("stop-choice-row").classList.add("hidden");
   if (status === "incomplete") {
     $("stop-form-title").textContent = "What happened?";
-    const list = $("stop-reason-list");
-    list.innerHTML = "";
-    for (const reason of state.config?.stopReasons || []) {
-      const btn = document.createElement("button");
-      btn.textContent = reason.label;
-      btn.addEventListener("click", () => {
+    buildCodeEntryUI($("stop-reason-list"), {
+      reasons: state.config?.stopReasons || [],
+      onMatch: (reason) => {
         pendingStop.reasonId = reason.id;
-        $("stop-reason-section").classList.add("hidden");
-        $("stop-form-title").textContent = "Job details";
-        goToStopFieldsOrNote();
-      });
-      list.appendChild(btn);
-    }
+        confirmStop();
+      },
+    });
     $("stop-reason-section").classList.remove("hidden");
   } else {
-    $("stop-form-title").textContent = "Job details";
-    goToStopFieldsOrNote();
+    confirmStop();
   }
-}
-function submitStopFields() {
-  const values = collectDynamicFields($("stop-dynamic-fields"), $("stop-fields-error"));
-  if (values === null) return;
-  pendingStop.stopFieldValues = values;
-  $("stop-fields-section").classList.add("hidden");
-  $("stop-form-title").textContent = "Confirm";
-  $("stop-note-section").classList.remove("hidden");
 }
 async function confirmStop() {
   try {
     await window.api.stopSession({
       status: pendingStop.status,
       stopReasonId: pendingStop.reasonId,
-      stopFieldValues: pendingStop.stopFieldValues,
-      note: $("stop-note-input").value.trim() || null,
+      note: null,
     });
     state.activeSession = null;
     screenOverride = null;
+    // Explicitly wait for a real push+pull before re-rendering, rather than
+    // relying on the next background sync cycle (which runs fire-and-forget
+    // and could leave the queue showing this job as still in_progress for
+    // a few seconds). If offline, this just times out quickly and the
+    // queue still refreshes from whatever's cached — no worse than before.
+    await window.api.forceSync();
     const fresh = await window.api.getState();
     state = { ...state, ...fresh };
     render();
@@ -412,9 +664,14 @@ function wireEvents() {
   $("login-input").addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
 
   $("logout-btn").addEventListener("click", () => { currentOperator = null; render(); });
-  $("start-job-btn").addEventListener("click", openStartForm);
-  $("form-cancel-btn").addEventListener("click", () => { showScreen("screen-home"); });
+  $("queue-tab-pending").addEventListener("click", () => { queueTab = "pending"; renderQueue(); });
+  $("queue-tab-finished").addEventListener("click", () => { queueTab = "finished"; renderQueue(); });
+  $("queue-refresh-btn").addEventListener("click", refreshQueue);
+  $("form-cancel-btn").addEventListener("click", () => { selectedWorkOrder = null; showScreen("screen-home"); });
   $("form-submit-btn").addEventListener("click", submitStartForm);
+
+  $("start-table-add-row-btn").addEventListener("click", () => addRow("start"));
+  $("stop-table-add-row-btn").addEventListener("click", () => addRow("stop"));
 
   $("pause-btn").addEventListener("click", openPauseScreen);
   $("pause-form-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });
@@ -423,12 +680,13 @@ function wireEvents() {
     render();
   });
 
+  $("view-queue-btn").addEventListener("click", openQueueView);
+  $("queue-view-back-btn").addEventListener("click", closeQueueView);
+
   $("stop-btn").addEventListener("click", openStopScreen);
   $("stop-form-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });
   $("stop-finished-btn").addEventListener("click", () => chooseStopStatus("finished"));
   $("stop-incomplete-btn").addEventListener("click", () => chooseStopStatus("incomplete"));
-  $("stop-fields-continue-btn").addEventListener("click", submitStopFields);
-  $("stop-confirm-btn").addEventListener("click", confirmStop);
 
   window.api.onStatusUpdate((status) => {
     state.status = status;

@@ -12,26 +12,31 @@ function buildReasonRouter(table) {
   });
 
   r.post("/", (req, res) => {
-    const { label } = req.body || {};
+    const { label, code } = req.body || {};
     if (!label) return res.status(400).json({ error: "label is required" });
     const id = uuid();
     try {
-      db.prepare(`INSERT INTO ${table} (id, label) VALUES (?, ?)`).run(id, label);
+      db.prepare(`INSERT INTO ${table} (id, label, code) VALUES (?, ?, ?)`).run(id, label, code || null);
     } catch (err) {
-      return res.status(400).json({ error: "That reason already exists" });
+      return res.status(400).json({ error: /code/i.test(err.message) ? "That code is already in use" : "That reason already exists" });
     }
-    res.status(201).json({ id, label, active: 1 });
+    res.status(201).json({ id, label, code: code || null, active: 1 });
   });
 
   r.put("/:id", (req, res) => {
-    const { label, active } = req.body || {};
+    const { label, code, active } = req.body || {};
     const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: "Not found" });
-    db.prepare(`UPDATE ${table} SET label = ?, active = ? WHERE id = ?`).run(
-      label ?? row.label,
-      active === undefined ? row.active : active ? 1 : 0,
-      req.params.id
-    );
+    try {
+      db.prepare(`UPDATE ${table} SET label = ?, code = ?, active = ? WHERE id = ?`).run(
+        label ?? row.label,
+        code === undefined ? row.code : code || null,
+        active === undefined ? row.active : active ? 1 : 0,
+        req.params.id
+      );
+    } catch (err) {
+      return res.status(400).json({ error: /code/i.test(err.message) ? "That code is already in use" : "Update failed" });
+    }
     res.json(db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(req.params.id));
   });
 

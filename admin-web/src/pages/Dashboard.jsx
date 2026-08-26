@@ -68,7 +68,8 @@ export default function Dashboard() {
             const s = statusOf(m);
             const fieldsById = {};
             (m.fields || []).forEach((f) => { fieldsById[f.id] = f; });
-            const inputEntries = m.currentSession ? Object.entries(m.currentSession.fieldValues || {}) : [];
+            const inputEntries = m.currentSession ? Object.entries(m.currentSession.fieldValuesPreview || {}) : [];
+            const extraRows = m.currentSession && m.currentSession.startRowCount > 1 ? m.currentSession.startRowCount - 1 : 0;
             return (
               <div className="card machine-card" key={m.machineId}>
                 <div className="head">
@@ -86,7 +87,7 @@ export default function Dashboard() {
 
                 {inputEntries.length > 0 && (
                   <>
-                    <div className="mini-section-title">Input</div>
+                    <div className="mini-section-title">Input {extraRows > 0 ? `(row 1 of ${extraRows + 1})` : ""}</div>
                     <div className="tag-list">
                       {inputEntries.map(([fieldId, value]) => {
                         const f = fieldsById[fieldId];

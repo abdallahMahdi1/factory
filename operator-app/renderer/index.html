@@ -45,7 +45,7 @@
       </div>
     </section>
 
-    <!-- Home: operator identified, no active job -->
+    <!-- Home: operator identified, shows the planned work-order queue -->
     <section id="screen-home" class="screen hidden">
       <div class="topline">
         <div>
@@ -54,45 +54,83 @@
         </div>
         <button class="btn secondary" id="logout-btn">Switch operator</button>
       </div>
-      <div class="center-box">
-        <button class="btn huge start" id="start-job-btn">▶ Start New Job</button>
+
+      <div class="queue-tabs">
+        <button class="tab-btn active" id="queue-tab-pending" data-tab="pending">Queue</button>
+        <button class="tab-btn" id="queue-tab-finished" data-tab="finished">Finished</button>
+        <button class="btn secondary refresh-btn" id="queue-refresh-btn" title="Refresh">
+          <span class="refresh-icon">↻</span> Refresh
+        </button>
       </div>
-      <div class="recent-panel">
-        <div class="section-title">Recent on this machine</div>
-        <div id="recent-list" class="recent-list"></div>
-      </div>
+
+      <div id="queue-list-pending" class="queue-list"></div>
+      <div id="queue-list-finished" class="queue-list hidden"></div>
     </section>
 
-    <!-- Start form: dynamic fields for this machine -->
+    <!-- Start form: the picked work order's context -->
     <section id="screen-start-form" class="screen hidden">
       <div class="topline">
         <div class="machine-label" id="form-machine-name">—</div>
         <button class="btn secondary" id="form-cancel-btn">Cancel</button>
       </div>
       <div class="form-box">
-        <h1>Before you start…</h1>
-        <div id="dynamic-fields"></div>
+        <h1>Are you sure you want to start this work order?</h1>
+        <div id="form-wo-context" class="wo-context"></div>
         <div id="form-error" class="error-text"></div>
         <button class="btn huge start" id="form-submit-btn">▶ Start</button>
       </div>
     </section>
 
-    <!-- Running / paused view -->
+    <!-- Running / paused view: timer + the Start table and End table, both
+         editable throughout the job, not just at one fixed point in time. -->
     <section id="screen-running" class="screen hidden">
       <div class="topline">
-        <div class="machine-label" id="run-machine-name">—</div>
-        <div class="operator-label" id="run-operator-name">—</div>
+        <div>
+          <div class="machine-label" id="run-machine-name">—</div>
+          <div class="operator-label" id="run-operator-name">—</div>
+        </div>
+        <button class="btn secondary" id="view-queue-btn">Work order list</button>
       </div>
-      <div class="center-box">
+
+      <div class="run-header">
         <div class="status-pill" id="run-status-pill">RUNNING</div>
         <div class="timer" id="run-timer">00:00:00</div>
-        <div id="run-fields" class="tag-list"></div>
+        <div id="run-wo-context" class="wo-context"></div>
+        <div id="run-hour-summary" class="row mono-data"></div>
         <div class="run-actions">
-          <button class="btn huge pause" id="pause-btn">⏸ Pause</button>
+          <button class="btn huge pause" id="pause-btn"><span class="pause-icon"></span> Pause</button>
           <button class="btn huge resume hidden" id="resume-btn">▶ Resume</button>
           <button class="btn huge stop" id="stop-btn">■ Stop</button>
         </div>
       </div>
+
+      <div class="table-section">
+        <div class="table-section-header">
+          <div class="section-title">Input</div>
+          <button class="btn secondary" id="start-table-add-row-btn">+ Add row</button>
+        </div>
+        <div class="table-scroll"><table id="start-table" class="row-table"></table></div>
+      </div>
+
+      <div class="table-section">
+        <div class="table-section-header">
+          <div class="section-title">Output</div>
+          <button class="btn secondary" id="stop-table-add-row-btn">+ Add row</button>
+        </div>
+        <div class="table-scroll"><table id="stop-table" class="row-table"></table></div>
+      </div>
+    </section>
+
+    <!-- Read-only work-order list, reachable from the Running screen. The
+         operator can see what's queued next while their current job runs,
+         but nothing here is tappable to start — only one job runs at a
+         time on this machine. -->
+    <section id="screen-queue-view" class="screen hidden">
+      <div class="topline">
+        <button class="btn secondary" id="queue-view-back-btn">‹ Back</button>
+        <div class="machine-label" id="queue-view-machine-name">—</div>
+      </div>
+      <div class="queue-list" id="queue-view-list"></div>
     </section>
 
     <!-- Pause screen: same layout language as the Start form -->
@@ -103,7 +141,7 @@
       </div>
       <div class="form-box">
         <h1>Why are you pausing?</h1>
-        <div id="pause-reason-list" class="reason-list"></div>
+        <div id="pause-reason-list" class="code-entry"></div>
         <div id="pause-form-error" class="error-text"></div>
       </div>
     </section>
@@ -121,24 +159,14 @@
           <button class="btn huge start" id="stop-finished-btn">✓ Finished</button>
           <button class="btn huge secondary" id="stop-incomplete-btn">Incomplete / Cancelled</button>
         </div>
+        <div id="stop-choice-error" class="error-text"></div>
 
         <div id="stop-reason-section" class="hidden">
           <div class="section-title">Reason</div>
-          <div id="stop-reason-list" class="reason-list"></div>
+          <div id="stop-reason-list" class="code-entry"></div>
         </div>
 
-        <div id="stop-fields-section" class="hidden">
-          <div id="stop-dynamic-fields"></div>
-          <div id="stop-fields-error" class="error-text"></div>
-          <button class="btn huge" id="stop-fields-continue-btn">Continue</button>
-        </div>
-
-        <div id="stop-note-section" class="hidden">
-          <label class="field-label">Note (optional)</label>
-          <input id="stop-note-input" class="text-input" type="text" />
-          <div id="stop-form-error" class="error-text"></div>
-          <button class="btn huge" id="stop-confirm-btn">Confirm Stop</button>
-        </div>
+        <div id="stop-form-error" class="error-text"></div>
       </div>
     </section>
 

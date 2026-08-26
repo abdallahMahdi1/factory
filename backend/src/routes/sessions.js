@@ -1,6 +1,7 @@
 const express = require("express");
 const { v4: uuid } = require("uuid");
 const db = require("../lib/db");
+const { parseRows } = require("../lib/rows");
 
 const router = express.Router();
 
@@ -25,10 +26,11 @@ router.get("/", (req, res) => {
 
   const rows = db
     .prepare(
-      `SELECT s.*, m.name as machine_name, o.name as operator_name
+      `SELECT s.*, m.name as machine_name, o.name as operator_name, w.job_no as work_order_job_no
        FROM sessions s
        JOIN machines m ON m.id = s.machine_id
        JOIN operators o ON o.id = s.operator_id
+       LEFT JOIN work_orders w ON w.id = s.work_order_id
        ${where}
        ORDER BY s.started_at DESC
        LIMIT 500`
@@ -91,24 +93,37 @@ router.get("/export.csv", (req, res) => {
   const groupHeaderRow = [...fixedCols.map(() => ""), ...fields.map((f) => f.group_label || "")];
   const labelHeaderRow = [...fixedCols, ...fields.map((f) => f.label)];
 
-  const rows = sessions.map((s) => {
-    const startVals = JSON.parse(s.field_values || "{}");
-    const stopVals = JSON.parse(s.stop_field_values || "{}");
-    const merged = { ...startVals, ...stopVals };
-    const fieldCells = fields.map((f) => {
-      const raw = merged[f.id];
-      if (raw === undefined || raw === null || raw === "") return "";
-      return f.type === "select" ? (optionValueById[raw] ?? raw) : raw;
-    });
-    return [
-      new Date(s.started_at).toLocaleDateString(),
-      s.operator_name,
-      new Date(s.started_at).toLocaleTimeString(),
-      s.ended_at ? new Date(s.ended_at).toLocaleTimeString() : "",
-      s.status,
-      ...fieldCells,
-    ];
-  });
+  // Each session can now have MULTIPLE rows in its Start table and
+  // multiple in its End table (e.g. several bobbins in, several drums
+  // out) — one CSV row is emitted per physical row, pairing Start-row N
+  // with End-row N by position. Sessions with more rows in one table than
+  // the other just leave the shorter side blank for the extra rows; this
+  // is a reasonable default pairing (matches how the two tables read
+  // top-to-bottom in the reference layout) but isn't a guaranteed 1:1
+  // correspondence in every real workflow.
+  const rows = [];
+  for (const s of sessions) {
+    const startRows = parseRows(s.field_values);
+    const stopRows = parseRows(s.stop_field_values);
+    const rowCount = Math.max(startRows.length, stopRows.length, 1);
+
+    for (let i = 0; i < rowCount; i++) {
+      const merged = { ...(startRows[i] || {}), ...(stopRows[i] || {}) };
+      const fieldCells = fields.map((f) => {
+        const raw = merged[f.id];
+        if (raw === undefined || raw === null || raw === "") return "";
+        return f.type === "select" ? (optionValueById[raw] ?? raw) : raw;
+      });
+      rows.push([
+        new Date(s.started_at).toLocaleDateString(),
+        s.operator_name,
+        new Date(s.started_at).toLocaleTimeString(),
+        s.ended_at ? new Date(s.ended_at).toLocaleTimeString() : "",
+        s.status,
+        ...fieldCells,
+      ]);
+    }
+  }
 
   const csv = [groupHeaderRow, labelHeaderRow, ...rows].map((r) => r.map(esc).join(",")).join("\r\n");
 
@@ -120,10 +135,11 @@ router.get("/export.csv", (req, res) => {
 router.get("/:id", (req, res) => {
   const session = db
     .prepare(
-      `SELECT s.*, m.name as machine_name, o.name as operator_name
+      `SELECT s.*, m.name as machine_name, o.name as operator_name, w.job_no as work_order_job_no, w.description as work_order_description
        FROM sessions s
        JOIN machines m ON m.id = s.machine_id
        JOIN operators o ON o.id = s.operator_id
+       LEFT JOIN work_orders w ON w.id = s.work_order_id
        WHERE s.id = ?`
     )
     .get(req.params.id);

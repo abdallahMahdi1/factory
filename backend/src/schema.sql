@@ -67,32 +67,77 @@ CREATE TABLE IF NOT EXISTS operator_machines (
 
 CREATE TABLE IF NOT EXISTS pause_reasons (
   id     TEXT PRIMARY KEY,
+  code   TEXT UNIQUE,
   label  TEXT UNIQUE NOT NULL,
   active INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS stop_reasons (
   id     TEXT PRIMARY KEY,
+  code   TEXT UNIQUE,
   label  TEXT UNIQUE NOT NULL,
   active INTEGER NOT NULL DEFAULT 1
+);
+
+-- A job planned by a supervisor for a specific machine, ahead of time.
+-- Operators pick from this queue rather than typing everything from
+-- scratch — sequence controls display/priority order (lower = do first).
+-- status: pending (waiting to be picked up) -> in_progress (an operator
+-- started it, session_id points at that session) -> finished (done) or
+-- back to pending (operator stopped it "incomplete" — session_id is
+-- cleared so it re-enters the queue for someone to pick up again; the
+-- session itself stays in the sessions table as a permanent record of
+-- that attempt).
+CREATE TABLE IF NOT EXISTS work_orders (
+  id                   TEXT PRIMARY KEY,
+  machine_id           TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+  sequence             INTEGER NOT NULL DEFAULT 0,
+  job_no               TEXT NOT NULL,
+  description          TEXT,
+  process              TEXT,
+  quantity             REAL,
+  priority             TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal','high','urgent')),
+  due_date             TEXT,
+  special_instruction  TEXT,
+  remarks              TEXT,
+  input_diameter       REAL,
+  total_tolerance      TEXT,
+  status               TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','finished','cancelled')),
+  session_id           TEXT REFERENCES sessions(id),
+  created_by           TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at           TEXT,
+  finished_at          TEXT
 );
 
 -- The actual time record. id is a UUID generated on the operator device
 -- (so it can be created while offline) and reused verbatim here, which is
 -- what makes re-sent sync batches safe to retry.
 CREATE TABLE IF NOT EXISTS sessions (
-  id                  TEXT PRIMARY KEY,
-  machine_id          TEXT NOT NULL REFERENCES machines(id),
-  operator_id         TEXT NOT NULL REFERENCES operators(id),
-  field_values        TEXT NOT NULL, -- JSON: { [machineFieldId]: "text/number or option_item id" } — stage='start' fields, answered when the job begins
-  stop_field_values    TEXT, -- JSON, same shape — stage='stop' fields, answered when the job ends (null until then)
-  started_at          TEXT NOT NULL,
-  ended_at            TEXT,
-  status              TEXT NOT NULL DEFAULT 'running', -- running | paused | finished | incomplete
-  stop_reason_id      TEXT REFERENCES stop_reasons(id),
-  completion_note     TEXT,
-  created_offline     INTEGER NOT NULL DEFAULT 0,
-  synced_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  id                   TEXT PRIMARY KEY,
+  machine_id           TEXT NOT NULL REFERENCES machines(id),
+  operator_id          TEXT NOT NULL REFERENCES operators(id),
+  work_order_id        TEXT REFERENCES work_orders(id),
+  -- Each is a JSON ARRAY of row-objects: [{ [machineFieldId]: "text/number
+  -- or option_item id" }, ...] — one array entry per row the operator
+  -- added to that table. field_values = the Start table (stage='start'
+  -- columns), stop_field_values = the End table (stage='stop' columns).
+  -- Always at least one row once a session exists; can grow to as many as
+  -- the operator adds, and can be edited any time the job is open.
+  field_values         TEXT NOT NULL DEFAULT '[]',
+  stop_field_values     TEXT NOT NULL DEFAULT '[]',
+  -- A machine counter/hour-meter reading the operator types in (not a
+  -- wall-clock timestamp) — Operating Hours is start subtracted from end,
+  -- computed wherever it's displayed rather than stored.
+  running_hour_start   REAL,
+  running_hour_end     REAL,
+  started_at           TEXT NOT NULL,
+  ended_at             TEXT,
+  status               TEXT NOT NULL DEFAULT 'running', -- running | paused | finished | incomplete
+  stop_reason_id       TEXT REFERENCES stop_reasons(id),
+  completion_note      TEXT,
+  created_offline      INTEGER NOT NULL DEFAULT 0,
+  synced_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS pause_events (

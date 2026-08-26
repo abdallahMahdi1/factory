@@ -43,26 +43,88 @@ function OptionListCard({ list, onChanged }) {
   );
 }
 
-function ReasonList({ title, hint, items, onAdd, onRemove }) {
+function ReasonRow({ reason, onSave, onRemove }) {
+  const [editing, setEditing] = useState(false);
+  const [code, setCode] = useState(reason.code || "");
+  const [label, setLabel] = useState(reason.label);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(reason.id, { code: code.trim() || null, label });
+      setEditing(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="reason-row">
+      {editing ? (
+        <>
+          <input className="mono-data" style={{ width: 60 }} value={code} onChange={(e) => setCode(e.target.value)} placeholder="code" />
+          <input style={{ flex: 1 }} value={label} onChange={(e) => setLabel(e.target.value)} />
+          <button className="btn secondary" onClick={save} disabled={saving}>Save</button>
+          <button className="btn secondary" onClick={() => setEditing(false)}>Cancel</button>
+        </>
+      ) : (
+        <>
+          <span className="reason-code">{reason.code || "—"}</span>
+          <span className="reason-label">{reason.label}</span>
+          <button className="btn secondary" onClick={() => setEditing(true)}>Edit</button>
+          <button className="btn secondary" onClick={() => onRemove(reason.id)}>Remove</button>
+        </>
+      )}
+      {error && <div className="error-text" style={{ width: "100%" }}>{error}</div>}
+    </div>
+  );
+}
+
+function ReasonList({ title, hint, items, onAdd, onSave, onRemove }) {
+  const [code, setCode] = useState("");
   const [label, setLabel] = useState("");
+  const [error, setError] = useState("");
   async function submit(e) {
     e.preventDefault();
-    if (!label.trim()) return;
-    await onAdd(label.trim());
-    setLabel("");
+    setError("");
+    if (!label.trim() || !code.trim()) { setError("Both a code and a label are required."); return; }
+    try {
+      await onAdd(label.trim(), code.trim());
+      setLabel(""); setCode("");
+    } catch (err) {
+      setError(err.message);
+    }
   }
   return (
     <div className="card">
       <h3>{title}</h3>
-      <div className="hint" style={{ marginBottom: 8 }}>{hint}</div>
-      <div className="tag-list">
-        {items.map((r) => <span className="tag" key={r.id}>{r.label}<button onClick={() => onRemove(r.id)}>×</button></span>)}
-        {items.length === 0 && <span className="hint">None yet</span>}
+      <div className="hint" style={{ marginBottom: 8 }}>
+        {hint} The operator types the <strong>code</strong> on a keypad to pick this reason — keep codes short and numeric (e.g. "01", "02").
       </div>
+      {items.length === 0 ? (
+        <div className="hint">None yet</div>
+      ) : (
+        <div className="reason-list-admin">
+          {items.map((r) => <ReasonRow key={r.id} reason={r} onSave={onSave} onRemove={onRemove} />)}
+        </div>
+      )}
       <form className="inline-form" style={{ marginTop: 10 }} onSubmit={submit}>
-        <div className="field"><input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Add a reason…" /></div>
+        <div className="field" style={{ maxWidth: 90 }}>
+          <label>Code</label>
+          <input className="mono-data" value={code} onChange={(e) => setCode(e.target.value)} placeholder="06" />
+        </div>
+        <div className="field">
+          <label>Label</label>
+          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Tool change" />
+        </div>
         <button className="btn secondary">Add</button>
       </form>
+      {error && <div className="error-text">{error}</div>}
     </div>
   );
 }
@@ -120,14 +182,16 @@ export default function MasterLists() {
           title="Pause reasons"
           hint="Shown when an operator clicks Pause."
           items={pauseReasons}
-          onAdd={async (label) => { await api.pauseReasons.create(label); load(); }}
+          onAdd={async (label, code) => { await api.pauseReasons.create(label, code); load(); }}
+          onSave={async (id, data) => { await api.pauseReasons.update(id, data); load(); }}
           onRemove={async (id) => { await api.pauseReasons.remove(id); load(); }}
         />
         <ReasonList
           title="Stop reasons"
-          hint="Shown when an operator clicks Stop (finished, cancelled, etc.)."
+          hint="Shown when an operator marks a job Incomplete/Cancelled."
           items={stopReasons}
-          onAdd={async (label) => { await api.stopReasons.create(label); load(); }}
+          onAdd={async (label, code) => { await api.stopReasons.create(label, code); load(); }}
+          onSave={async (id, data) => { await api.stopReasons.update(id, data); load(); }}
           onRemove={async (id) => { await api.stopReasons.remove(id); load(); }}
         />
       </div>

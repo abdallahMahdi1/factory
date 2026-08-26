@@ -189,4 +189,131 @@ router.put("/:id/fields", (req, res) => {
   res.json(fieldsForMachine(req.params.id));
 });
 
+// ---- Work order queue for a machine (planned by a supervisor) ----
+
+const PRIORITIES = ["normal", "high", "urgent"];
+
+function workOrdersForMachine(machineId, status) {
+  const clauses = ["machine_id = ?"];
+  const params = [machineId];
+  if (status) { clauses.push("status = ?"); params.push(status); }
+  return db
+    .prepare(`SELECT * FROM work_orders WHERE ${clauses.join(" AND ")} ORDER BY sequence ASC, created_at ASC`)
+    .all(...params);
+}
+
+router.get("/:id/work-orders", (req, res) => {
+  res.json(workOrdersForMachine(req.params.id, req.query.status));
+});
+
+router.post("/:id/work-orders", (req, res) => {
+  const { jobNo, description, process, quantity, priority, dueDate, specialInstruction, remarks, inputDiameter, totalTolerance, sequence } = req.body || {};
+  if (!jobNo) return res.status(400).json({ error: "jobNo is required" });
+  if (priority && !PRIORITIES.includes(priority)) {
+    return res.status(400).json({ error: "priority must be 'normal', 'high', or 'urgent'" });
+  }
+  const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(req.params.id);
+  if (!machine) return res.status(404).json({ error: "Machine not found" });
+
+  const maxSeq = db.prepare("SELECT COALESCE(MAX(sequence), -1) as m FROM work_orders WHERE machine_id = ?").get(req.params.id).m;
+  const id = uuid();
+  db.prepare(
+    `INSERT INTO work_orders
+       (id, machine_id, sequence, job_no, description, process, quantity, priority, due_date, special_instruction, remarks, input_diameter, total_tolerance, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id, req.params.id, sequence ?? maxSeq + 1, jobNo, description || null, process || null,
+    quantity ?? null, priority || "normal", dueDate || null, specialInstruction || null, remarks || null,
+    inputDiameter ?? null, totalTolerance || null,
+    req.admin?.username || null
+  );
+  res.status(201).json(db.prepare("SELECT * FROM work_orders WHERE id = ?").get(id));
+});
+
+// Explicit reorder: body is an array of work order ids in the new desired
+// order. Simpler and less error-prone from the admin UI than asking the
+// client to compute individual sequence numbers itself.
+router.put("/:id/work-orders/reorder", (req, res) => {
+  const { orderedIds } = req.body || {};
+  if (!Array.isArray(orderedIds)) return res.status(400).json({ error: "orderedIds must be an array" });
+  const tx = db.transaction(() => {
+    const stmt = db.prepare("UPDATE work_orders SET sequence = ? WHERE id = ? AND machine_id = ?");
+    orderedIds.forEach((id, i) => stmt.run(i, id, req.params.id));
+  });
+  tx();
+  res.json(workOrdersForMachine(req.params.id));
+});
+
+// Bulk create: one row per work order, e.g. pasted from a supervisor's
+// planning sheet. Appends after whatever's already queued rather than
+// replacing it (unlike the machine-fields bulk endpoint) — importing a new
+// batch of jobs shouldn't wipe out jobs already in progress.
+router.post("/:id/work-orders/bulk", (req, res) => {
+  const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(req.params.id);
+  if (!machine) return res.status(404).json({ error: "Machine not found" });
+  const { workOrders } = req.body || {};
+  if (!Array.isArray(workOrders) || workOrders.length === 0) {
+    return res.status(400).json({ error: "workOrders must be a non-empty array" });
+  }
+  for (const w of workOrders) {
+    if (!w.jobNo) return res.status(400).json({ error: "Every work order needs a jobNo" });
+  }
+
+  const maxSeq = db.prepare("SELECT COALESCE(MAX(sequence), -1) as m FROM work_orders WHERE machine_id = ?").get(req.params.id).m;
+  const tx = db.transaction(() => {
+    const insert = db.prepare(
+      `INSERT INTO work_orders
+         (id, machine_id, sequence, job_no, description, process, quantity, priority, due_date, special_instruction, remarks, input_diameter, total_tolerance, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    workOrders.forEach((w, i) => {
+      insert.run(
+        uuid(), req.params.id, maxSeq + 1 + i, w.jobNo, w.description || null, w.process || null,
+        w.quantity ?? null, PRIORITIES.includes(w.priority) ? w.priority : "normal",
+        w.dueDate || null, w.specialInstruction || null, w.remarks || null,
+        w.inputDiameter ?? null, w.totalTolerance || null, req.admin?.username || null
+      );
+    });
+  });
+  tx();
+
+  res.status(201).json(workOrdersForMachine(req.params.id));
+});
+
+
+router.put("/:id/work-orders/:workOrderId", (req, res) => {
+  const wo = db.prepare("SELECT * FROM work_orders WHERE id = ? AND machine_id = ?").get(req.params.workOrderId, req.params.id);
+  if (!wo) return res.status(404).json({ error: "Work order not found" });
+  const { jobNo, description, process, quantity, priority, dueDate, specialInstruction, remarks, inputDiameter, totalTolerance, sequence, status } = req.body || {};
+  if (priority && !PRIORITIES.includes(priority)) {
+    return res.status(400).json({ error: "priority must be 'normal', 'high', or 'urgent'" });
+  }
+  db.prepare(
+    `UPDATE work_orders SET
+       job_no = ?, description = ?, process = ?, quantity = ?, priority = ?, due_date = ?,
+       special_instruction = ?, remarks = ?, input_diameter = ?, total_tolerance = ?, sequence = ?, status = ?
+     WHERE id = ?`
+  ).run(
+    jobNo ?? wo.job_no,
+    description === undefined ? wo.description : description,
+    process === undefined ? wo.process : process,
+    quantity === undefined ? wo.quantity : quantity,
+    priority || wo.priority,
+    dueDate === undefined ? wo.due_date : dueDate,
+    specialInstruction === undefined ? wo.special_instruction : specialInstruction,
+    remarks === undefined ? wo.remarks : remarks,
+    inputDiameter === undefined ? wo.input_diameter : inputDiameter,
+    totalTolerance === undefined ? wo.total_tolerance : totalTolerance,
+    sequence === undefined ? wo.sequence : sequence,
+    status || wo.status,
+    req.params.workOrderId
+  );
+  res.json(db.prepare("SELECT * FROM work_orders WHERE id = ?").get(req.params.workOrderId));
+});
+
+router.delete("/:id/work-orders/:workOrderId", (req, res) => {
+  db.prepare("DELETE FROM work_orders WHERE id = ? AND machine_id = ?").run(req.params.workOrderId, req.params.id);
+  res.status(204).end();
+});
+
 module.exports = router;

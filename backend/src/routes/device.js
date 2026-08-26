@@ -43,8 +43,45 @@ router.get("/config", (req, res) => {
     )
     .all(machine.id);
 
-  const pauseReasons = db.prepare("SELECT id, label FROM pause_reasons WHERE active = 1 ORDER BY label ASC").all();
-  const stopReasons = db.prepare("SELECT id, label FROM stop_reasons WHERE active = 1 ORDER BY label ASC").all();
+  const pauseReasons = db.prepare("SELECT id, code, label FROM pause_reasons WHERE active = 1 ORDER BY label ASC").all();
+  const stopReasons = db.prepare("SELECT id, code, label FROM stop_reasons WHERE active = 1 ORDER BY label ASC").all();
+
+  // The planned job queue for this machine. Pending/in_progress = what the
+  // operator picks from to start work; finished = a capped recent history
+  // so the app can show a "Finished" list without a second authenticated
+  // call (devices only ever authenticate via their machine API key, not an
+  // admin JWT, so this piggybacks on the same config fetch the app already
+  // polls every 15s).
+  const workOrdersPending = db
+    .prepare(
+      `SELECT * FROM work_orders WHERE machine_id = ? AND status IN ('pending','in_progress')
+       ORDER BY sequence ASC, created_at ASC`
+    )
+    .all(machine.id);
+  const workOrdersFinished = db
+    .prepare(
+      `SELECT * FROM work_orders WHERE machine_id = ? AND status = 'finished'
+       ORDER BY finished_at DESC LIMIT 50`
+    )
+    .all(machine.id);
+
+  const toWorkOrderJson = (w) => ({
+    id: w.id,
+    sequence: w.sequence,
+    jobNo: w.job_no,
+    description: w.description,
+    process: w.process,
+    quantity: w.quantity,
+    priority: w.priority,
+    dueDate: w.due_date,
+    specialInstruction: w.special_instruction,
+    remarks: w.remarks,
+    inputDiameter: w.input_diameter,
+    totalTolerance: w.total_tolerance,
+    status: w.status,
+    startedAt: w.started_at,
+    finishedAt: w.finished_at,
+  });
 
   res.json({
     machine: { id: machine.id, name: machine.name, code: machine.code },
@@ -56,6 +93,10 @@ router.get("/config", (req, res) => {
     operators,
     pauseReasons,
     stopReasons,
+    workOrders: {
+      pending: workOrdersPending.map(toWorkOrderJson),
+      finished: workOrdersFinished.map(toWorkOrderJson),
+    },
   });
 });
 
@@ -89,12 +130,17 @@ router.post("/sync", (req, res) => {
     try {
       switch (type) {
         case "start": {
-          const { sessionId, operatorId, fieldValues, startedAt } = payload;
+          const { sessionId, operatorId, startedAt, workOrderId, runningHourStart } = payload;
           db.prepare(
             `INSERT OR IGNORE INTO sessions
-               (id, machine_id, operator_id, field_values, started_at, status, created_offline)
-             VALUES (?, ?, ?, ?, ?, 'running', ?)`
-          ).run(sessionId, req.machine.id, operatorId, JSON.stringify(fieldValues || {}), startedAt, event.createdOffline ? 1 : 0);
+               (id, machine_id, operator_id, work_order_id, field_values, stop_field_values, running_hour_start, started_at, status, created_offline)
+             VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, 'running', ?)`
+          ).run(sessionId, req.machine.id, operatorId, workOrderId || null, runningHourStart ?? null, startedAt, event.createdOffline ? 1 : 0);
+          if (workOrderId) {
+            db.prepare(
+              "UPDATE work_orders SET status = 'in_progress', session_id = ?, started_at = ? WHERE id = ? AND machine_id = ?"
+            ).run(sessionId, startedAt, workOrderId, req.machine.id);
+          }
           break;
         }
         case "pause": {
@@ -111,18 +157,70 @@ router.post("/sync", (req, res) => {
           db.prepare("UPDATE sessions SET status = 'running' WHERE id = ?").run(sessionId);
           break;
         }
+        // Rows can be added, edited, or removed at any point while a job
+        // is open — before it's finished, while running or paused. Each
+        // save sends the FULL current row set for one table (not a diff),
+        // which keeps this safe under retry/offline-queueing: the device
+        // is the only writer for its own session, so whichever update was
+        // generated last simply overwrites, and a duplicate/retried event
+        // with the same eventId is caught by the dedup check above like
+        // every other event type.
+        case "update_rows": {
+          const { sessionId, table, rows } = payload;
+          if (table !== "start" && table !== "stop") {
+            throw new Error(`table must be "start" or "stop", got: ${table}`);
+          }
+          const column = table === "start" ? "field_values" : "stop_field_values";
+          db.prepare(`UPDATE sessions SET ${column} = ? WHERE id = ?`).run(JSON.stringify(rows || []), sessionId);
+          break;
+        }
         case "stop": {
-          const { sessionId, endedAt, status, stopReasonId, completionNote, stopFieldValues } = payload;
+          const { sessionId, endedAt, status, stopReasonId, completionNote, runningHourEnd } = payload;
           db.prepare(
-            "UPDATE sessions SET ended_at = ?, status = ?, stop_reason_id = ?, completion_note = ?, stop_field_values = ? WHERE id = ?"
+            "UPDATE sessions SET ended_at = ?, status = ?, stop_reason_id = ?, completion_note = ?, running_hour_end = ? WHERE id = ?"
           ).run(
             endedAt,
             status || "finished",
             stopReasonId || null,
             completionNote || null,
-            JSON.stringify(stopFieldValues || {}),
+            runningHourEnd ?? null,
             sessionId
           );
+
+          // If this session was tied to a planned work order, move it
+          // through the queue: "finished" completes it for good; anything
+          // else ("incomplete") releases it back to pending — session_id is
+          // cleared so it re-enters the queue and can be picked up again,
+          // while the session row itself stays as a permanent record of
+          // that attempt.
+          const session = db.prepare("SELECT work_order_id FROM sessions WHERE id = ?").get(sessionId);
+          if (session && session.work_order_id) {
+            if ((status || "finished") === "finished") {
+              db.prepare("UPDATE work_orders SET status = 'finished', finished_at = ? WHERE id = ?").run(endedAt, session.work_order_id);
+            } else {
+              db.prepare("UPDATE work_orders SET status = 'pending', session_id = NULL WHERE id = ?").run(session.work_order_id);
+            }
+          }
+          break;
+        }
+        // "Delete Job": an operator can remove a job they started by
+        // mistake — but only while it's still open. Once a session has
+        // been finished (or marked incomplete), it's a permanent record;
+        // deletion is refused rather than silently ignored, so a stale
+        // offline-queued delete can never destroy real history.
+        case "delete_session": {
+          const { sessionId } = payload;
+          const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId);
+          if (!session) break; // already gone (e.g. a retried delete) — nothing to do
+          if (session.status === "finished" || session.status === "incomplete") {
+            throw new Error("Cannot delete a session that has already been stopped.");
+          }
+          if (session.work_order_id) {
+            db.prepare("UPDATE work_orders SET status = 'pending', session_id = NULL, started_at = NULL WHERE id = ?").run(
+              session.work_order_id
+            );
+          }
+          db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId); // pause_events, session_edits cascade
           break;
         }
         default:

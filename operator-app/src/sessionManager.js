@@ -6,7 +6,7 @@
 const { randomUUID } = require("crypto");
 const { fetchConfig, pushEvents } = require("./sync");
 
-const EMPTY_CONFIG = { machine: null, fields: [], operators: [], pauseReasons: [], stopReasons: [] };
+const EMPTY_CONFIG = { machine: null, fields: [], stopFields: [], operators: [], pauseReasons: [], stopReasons: [], workOrders: { pending: [], finished: [] } };
 
 function createSessionManager({ localDb, apiBase, apiKey }) {
   let online = false;
@@ -52,25 +52,60 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     return cfg.operators.find((o) => String(o.id_number) === String(idNumber)) || null;
   }
 
-  function startSession({ operatorId, operatorName, fieldValues }) {
+  function startSession({ operatorId, operatorName, workOrder, runningHourStart }) {
     if (getActiveSession()) throw new Error("A job is already running on this machine.");
+    if (!workOrder || !workOrder.id) throw new Error("A work order must be selected to start a job.");
     const sessionId = randomUUID();
     const startedAt = nowIso();
     const session = {
       id: sessionId,
       operatorId,
       operatorName,
-      fieldValues: fieldValues || {},
       startedAt,
       status: "running",
       pauses: [],
+      workOrderId: workOrder.id,
+      // A full snapshot of the work order's display info, captured at the
+      // moment the job starts. The running screen reads from this rather
+      // than re-looking the work order up in the (possibly stale, if
+      // offline) cached queue — so what's shown never depends on sync
+      // timing once the job is under way.
+      workOrderSnapshot: workOrder,
+      runningHourStart: runningHourStart ?? null,
+      runningHourEnd: null,
+      // Each is an array of row objects — the Start table and End table.
+      // A session always has at least an empty array here (never
+      // undefined), so the UI can render an empty table immediately and
+      // the operator adds rows as they go.
+      startRows: [],
+      stopRows: [],
     };
     localDb.setKV("active_session", session);
     localDb.enqueueEvent({
       eventId: `${sessionId}-start`,
       type: "start",
       createdOffline: !online,
-      payload: { sessionId, operatorId, fieldValues: session.fieldValues, startedAt },
+      payload: { sessionId, operatorId, startedAt, workOrderId: workOrder.id, runningHourStart: runningHourStart ?? null },
+    });
+    return session;
+  }
+
+  // Overwrites the FULL row set for one table (Start or End) — not a diff.
+  // Safe to call as often as the operator adds/edits/removes a row; each
+  // call gets its own fresh eventId so the offline queue treats every save
+  // as its own retry-safe event, and the backend just takes whichever one
+  // applied most recently as the current truth for that table.
+  function updateRows({ table, rows }) {
+    const session = getActiveSession();
+    if (!session) throw new Error("No active job.");
+    if (table !== "start" && table !== "stop") throw new Error(`Invalid table: ${table}`);
+    if (table === "start") session.startRows = rows;
+    else session.stopRows = rows;
+    localDb.setKV("active_session", session);
+    localDb.enqueueEvent({
+      eventId: randomUUID(),
+      type: "update_rows",
+      payload: { sessionId: session.id, table, rows },
     });
     return session;
   }
@@ -110,7 +145,7 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     return session;
   }
 
-  function stopSession({ status, stopReasonId, note, stopFieldValues }) {
+  function stopSession({ status, stopReasonId, note, runningHourEnd }) {
     const session = getActiveSession();
     if (!session) throw new Error("No active job.");
 
@@ -139,7 +174,7 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
         status,
         stopReasonId: stopReasonId || null,
         completionNote: note || null,
-        stopFieldValues: stopFieldValues || {},
+        runningHourEnd: runningHourEnd ?? null,
       },
     });
 
@@ -156,6 +191,22 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     return { id: session.id, endedAt, status };
   }
 
+  // "Delete Job": lets an operator remove a job started by mistake — only
+  // while it's still open (running/paused). Checked here too, not just on
+  // the backend, so the app can give an immediate, clear error instead of
+  // queuing an event that's guaranteed to be refused later.
+  function deleteSession() {
+    const session = getActiveSession();
+    if (!session) throw new Error("No active job.");
+    localDb.enqueueEvent({
+      eventId: randomUUID(),
+      type: "delete_session",
+      payload: { sessionId: session.id },
+    });
+    localDb.setKV("active_session", null);
+    return { id: session.id };
+  }
+
   // Pulls fresh config (so admin-panel edits eventually reach the shop
   // floor) and drains the local event queue in small batches. Safe to call
   // as often as you like — it's a no-op when there's nothing to do and
@@ -163,8 +214,12 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
   async function runSyncCycle() {
     syncing = true;
     try {
-      await refreshConfig();
-
+      // Push first, then pull: this way, refreshing config right after
+      // pushing an event (e.g. right after an operator stops a job) sees
+      // the RESULT of that same push — the just-finished work order
+      // correctly shows as finished, not still in_progress from a moment
+      // ago. Pulling first (the previous order) meant the freshest local
+      // change was always one cycle behind in what the config showed.
       let pushed = 0;
       for (;;) {
         const batch = localDb.getPendingEvents(50);
@@ -184,6 +239,8 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
           break; // no network — leave the rest queued, try again next cycle
         }
       }
+
+      await refreshConfig();
       return { pushed, pendingCount: localDb.countPending(), online };
     } finally {
       syncing = false;
@@ -197,9 +254,11 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     refreshConfig,
     findOperatorByIdNumber,
     startSession,
+    updateRows,
     pauseSession,
     resumeSession,
     stopSession,
+    deleteSession,
     runSyncCycle,
     getRecentLocalSessions: (limit) => localDb.getRecentLocalSessions(limit),
   };

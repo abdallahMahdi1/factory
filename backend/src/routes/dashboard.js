@@ -1,5 +1,6 @@
 const express = require("express");
 const db = require("../lib/db");
+const { parseRows } = require("../lib/rows");
 
 const router = express.Router();
 
@@ -58,8 +59,10 @@ router.get("/status", (req, res) => {
   const status = machines.map((m) => {
     const openSession = db
       .prepare(
-        `SELECT s.*, o.name as operator_name
-         FROM sessions s JOIN operators o ON o.id = s.operator_id
+        `SELECT s.*, o.name as operator_name, w.job_no as work_order_job_no
+         FROM sessions s
+         JOIN operators o ON o.id = s.operator_id
+         LEFT JOIN work_orders w ON w.id = s.work_order_id
          WHERE s.machine_id = ? AND s.ended_at IS NULL
          ORDER BY s.started_at DESC LIMIT 1`
       )
@@ -88,7 +91,14 @@ router.get("/status", (req, res) => {
             status: openSession.status,
             startedAt: openSession.started_at,
             runningHours: runningHours ? Math.round(runningHours * 10) / 10 : null,
-            fieldValues: JSON.parse(openSession.field_values || "{}"),
+            // Rows (not a single flat set of values) since a session's
+            // Start table can now have more than one row — the dashboard
+            // card shows the FIRST row as a representative preview rather
+            // than every row of every machine's card, which would get
+            // cluttered fast on a floor with many machines.
+            fieldValuesPreview: parseRows(openSession.field_values)[0] || {},
+            startRowCount: parseRows(openSession.field_values).length,
+            workOrderJobNo: openSession.work_order_job_no || null,
           }
         : null,
       // Sent once per machine so the dashboard can label fieldValues above

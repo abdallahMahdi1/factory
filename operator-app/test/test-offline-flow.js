@@ -34,6 +34,23 @@ async function main() {
   const bootstrapCfg = await bootstrapManager.refreshConfig();
   assert(bootstrapCfg.machine !== null, "device successfully cached real config while online");
 
+  // Sessions now require a real work order (planned by a supervisor) to
+  // start against — create one here via the admin API so this offline test
+  // still has something real to pick up, exactly like the operator app's
+  // queue screen would show.
+  const adminLogin = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "admin", password: "admin123" }),
+  }).then((r) => r.json());
+  const woRes = await fetch(`${API_BASE}/machines/${bootstrapCfg.machine.id}/work-orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminLogin.token}` },
+    body: JSON.stringify({ jobNo: `TEST-WO-${Date.now()}` }),
+  }).then((r) => r.json());
+  assert(woRes.status === "pending", "test work order created for this offline run");
+  const testWorkOrder = { id: woRes.id, jobNo: woRes.job_no, priority: woRes.priority };
+
   // Deliberately wrong port so every sync attempt below fails, exactly like
   // a machine with no internet — this is the "offline" phase. It reuses the
   // SAME local DB, so it still has the config cached from Phase 0.
@@ -47,7 +64,7 @@ async function main() {
   const workOrderField = cfg.fields.find((f) => f.label === "Work order");
   const fieldValues = workOrderField ? { [workOrderField.id]: workOrderField.options[0].id } : {};
 
-  const session = offlineManager.startSession({ operatorId: op.id, operatorName: op.name, fieldValues });
+  const session = offlineManager.startSession({ operatorId: op.id, operatorName: op.name, fieldValues, workOrder: testWorkOrder });
   assert(session.status === "running", "session starts locally with no network");
   assert(offlineManager.getStatus().pendingCount === 1, "start event queued locally (1 pending)");
 
@@ -77,6 +94,12 @@ async function main() {
   assert(syncResult.online === true, "sync cycle detects the backend is now reachable");
   assert(syncResult.pushed === 4, `all 4 queued events were pushed (got ${syncResult.pushed})`);
   assert(syncResult.pendingCount === 0, "queue is empty after a successful sync");
+
+  const woAfterSync = await fetch(`${API_BASE}/machines/${bootstrapCfg.machine.id}/work-orders`, {
+    headers: { Authorization: `Bearer ${adminLogin.token}` },
+  }).then((r) => r.json());
+  const finishedWo = woAfterSync.find((w) => w.id === testWorkOrder.id);
+  assert(finishedWo && finishedWo.status === "finished", "work order picked up offline correctly shows as finished after sync");
 
   console.log("\n--- Phase 3: retry safety ---");
   // Simulate the device retrying a sync it thinks might not have landed

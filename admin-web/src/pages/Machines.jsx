@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { parseSheetCsv } from "../lib/parseSheetCsv.js";
+import { parseWorkOrdersCsv } from "../lib/parseWorkOrdersCsv.js";
 
 function NewMachineForm({ onCreated }) {
   const [name, setName] = useState("");
@@ -339,10 +340,345 @@ function FieldEditor({ machine, optionLists, onChanged }) {
 
   return (
     <div>
-      {renderTable(startFields, "Start-form fields", "Answered when the operator clicks Start — typically the Input side of a job (work order, material, size, etc).")}
-      {renderTable(stopFields, "Stop-form fields", "Answered when the operator finishes or cancels the job — typically the Output side (results, measurements, scrap).")}
+      {renderTable(startFields, "Input fields", "Columns of the operator's Input table — filled in as rows added throughout the job (material, size, work order details, etc).")}
+      {renderTable(stopFields, "Output fields", "Columns of the operator's Output table — filled in as rows added throughout the job (results, measurements, scrap, etc).")}
       <div className="section-title">Add a field</div>
       <AddFieldForm machine={machine} optionLists={optionLists} onChanged={onChanged} />
+    </div>
+  );
+}
+
+const PRIORITY_BADGE = { normal: "grey", high: "amber", urgent: "red" };
+const STATUS_BADGE = { pending: "grey", in_progress: "green", finished: "grey", cancelled: "red" };
+
+function AddWorkOrderForm({ machine, onAdded }) {
+  const [jobNo, setJobNo] = useState("");
+  const [description, setDescription] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [priority, setPriority] = useState("normal");
+  const [dueDate, setDueDate] = useState("");
+  const [inputDiameter, setInputDiameter] = useState("");
+  const [totalTolerance, setTotalTolerance] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    setSaving(true);
+    try {
+      await api.machines.workOrders.create(machine.id, {
+        jobNo, description: description || null,
+        quantity: quantity ? Number(quantity) : null,
+        priority, dueDate: dueDate || null,
+        inputDiameter: inputDiameter ? Number(inputDiameter) : null,
+        totalTolerance: totalTolerance || null,
+        remarks: remarks || null,
+      });
+      setJobNo(""); setDescription(""); setQuantity(""); setDueDate(""); setPriority("normal");
+      setInputDiameter(""); setTotalTolerance(""); setRemarks("");
+      onAdded();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="inline-form" onSubmit={submit} style={{ flexWrap: "wrap" }}>
+      <div className="field" style={{ minWidth: 140 }}>
+        <label>Job No *</label>
+        <input value={jobNo} onChange={(e) => setJobNo(e.target.value)} placeholder="WO-1001" required />
+      </div>
+      <div className="field" style={{ minWidth: 180 }}>
+        <label>Description</label>
+        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="3CX120MM2 cable" />
+      </div>
+      <div className="field" style={{ minWidth: 100 }}>
+        <label>Quantity</label>
+        <input type="number" step="any" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+      </div>
+      <div className="field" style={{ minWidth: 110 }}>
+        <label>Priority</label>
+        <select value={priority} onChange={(e) => setPriority(e.target.value)}>
+          <option value="normal">Normal</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+        </select>
+      </div>
+      <div className="field" style={{ minWidth: 150 }}>
+        <label>Due date</label>
+        <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+      </div>
+      <div className="field" style={{ minWidth: 120 }}>
+        <label>Input diameter</label>
+        <input type="number" step="any" value={inputDiameter} onChange={(e) => setInputDiameter(e.target.value)} placeholder="e.g. 25.4" />
+      </div>
+      <div className="field" style={{ minWidth: 130 }}>
+        <label>Total tolerance</label>
+        <input value={totalTolerance} onChange={(e) => setTotalTolerance(e.target.value)} placeholder="e.g. ±0.1mm" />
+      </div>
+      <div className="field" style={{ minWidth: 180 }}>
+        <label>Remarks</label>
+        <input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" />
+      </div>
+      <button className="btn secondary" disabled={saving}>{saving ? "Adding…" : "Add to queue"}</button>
+      {error && <div className="error-text">{error}</div>}
+    </form>
+  );
+}
+
+// Paste a flat CSV (Job No, Description, Process, Quantity, Priority, Due
+// Date, Special Instruction, Remarks — header names are matched loosely)
+// and get back an editable preview before actually creating anything. This
+// is what makes bringing in a supervisor's existing planning sheet (many
+// rows at once) practical instead of retyping every job by hand.
+function BulkImportWorkOrders({ machine, onImported }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [warning, setWarning] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function runParse() {
+    setError("");
+    const { workOrders, warning } = parseWorkOrdersCsv(text);
+    setPreview(workOrders);
+    setWarning(warning || "");
+  }
+  function updateRow(i, patch) {
+    setPreview((prev) => prev.map((w, idx) => (idx === i ? { ...w, ...patch } : w)));
+  }
+  function removeRow(i) {
+    setPreview((prev) => prev.filter((_, idx) => idx !== i));
+  }
+  async function confirmImport() {
+    setSaving(true);
+    setError("");
+    try {
+      await api.machines.workOrders.bulkCreate(machine.id, preview);
+      setOpen(false);
+      setText("");
+      setPreview(null);
+      onImported();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return <button className="btn secondary" onClick={() => setOpen(true)}>Bulk import…</button>;
+  }
+
+  return (
+    <div className="modal-overlay" onClick={() => setOpen(false)}>
+      <div className="modal" style={{ width: 760, maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <h2>Bulk import work orders</h2>
+        {!preview ? (
+          <>
+            <div className="hint" style={{ marginBottom: 10 }}>
+              Paste rows from a planning sheet — a header row followed by one row per job. Recognized columns: Job
+              No (required), Description, Process, Quantity, Priority, Due Date, Special Instruction, Remarks —
+              column names are matched loosely, so "Size & Type" or "Delivery Date" work fine too.
+            </div>
+            <textarea
+              className="mono-data"
+              style={{ width: "100%", minHeight: 200, fontSize: 12, padding: 10, border: "1px solid var(--border)", borderRadius: 8 }}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Job No,Description,Process,Quantity,Priority,Due Date,Special Instruction,Remarks&#10;WO-1001,3CX120MM2 cable,SHEATHING,1.1,High,2026-06-30,LSHF ORANGE,"
+            />
+            <div className="actions">
+              <button className="btn secondary" onClick={() => setOpen(false)}>Cancel</button>
+              <button className="btn" onClick={runParse} disabled={!text.trim()}>Parse</button>
+            </div>
+          </>
+        ) : (
+          <>
+            {warning && <div className="error-text" style={{ marginBottom: 8 }}>{warning}</div>}
+            <div className="hint" style={{ marginBottom: 10 }}>
+              Found {preview.length} work orders. These will be added to the END of the existing queue (nothing
+              already planned gets removed). Review and adjust before confirming.
+            </div>
+            <table style={{ marginBottom: 4 }}>
+              <thead><tr><th>Job No</th><th>Description</th><th>Qty</th><th>Priority</th><th>Due</th><th></th></tr></thead>
+              <tbody>
+                {preview.map((w, i) => (
+                  <tr key={i}>
+                    <td><input style={{ width: 120 }} value={w.jobNo} onChange={(e) => updateRow(i, { jobNo: e.target.value })} /></td>
+                    <td><input style={{ width: 160 }} value={w.description || ""} onChange={(e) => updateRow(i, { description: e.target.value })} /></td>
+                    <td><input style={{ width: 70 }} type="number" step="any" value={w.quantity ?? ""} onChange={(e) => updateRow(i, { quantity: e.target.value ? Number(e.target.value) : null })} /></td>
+                    <td>
+                      <select value={w.priority} onChange={(e) => updateRow(i, { priority: e.target.value })}>
+                        <option value="normal">Normal</option>
+                        <option value="high">High</option>
+                        <option value="urgent">Urgent</option>
+                      </select>
+                    </td>
+                    <td><input style={{ width: 110 }} type="date" value={w.dueDate || ""} onChange={(e) => updateRow(i, { dueDate: e.target.value })} /></td>
+                    <td><button className="btn secondary" onClick={() => removeRow(i)}>Remove</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {error && <div className="error-text">{error}</div>}
+            <div className="actions">
+              <button className="btn secondary" onClick={() => setPreview(null)}>Back</button>
+              <button className="btn" onClick={confirmImport} disabled={saving || preview.length === 0}>
+                {saving ? "Adding…" : `Add ${preview.length} work orders`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkOrderRow({ machine, wo, isFirst, isLast, onChanged, onMoveUp, onMoveDown }) {
+  const [editing, setEditing] = useState(false);
+  const [jobNo, setJobNo] = useState(wo.job_no);
+  const [description, setDescription] = useState(wo.description || "");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.machines.workOrders.update(machine.id, wo.id, { jobNo, description: description || null });
+      setEditing(false);
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function remove() {
+    if (!window.confirm(`Remove work order "${wo.job_no}" from the queue?`)) return;
+    await api.machines.workOrders.remove(machine.id, wo.id);
+    onChanged();
+  }
+
+  return (
+    <tr>
+      <td style={{ whiteSpace: "nowrap" }}>
+        <button className="btn secondary" onClick={onMoveUp} disabled={isFirst} style={{ padding: "2px 8px" }}>↑</button>{" "}
+        <button className="btn secondary" onClick={onMoveDown} disabled={isLast} style={{ padding: "2px 8px" }}>↓</button>
+      </td>
+      <td>{editing ? <input style={{ width: 120 }} value={jobNo} onChange={(e) => setJobNo(e.target.value)} /> : <strong>{wo.job_no}</strong>}</td>
+      <td>{editing ? <input style={{ width: 160 }} value={description} onChange={(e) => setDescription(e.target.value)} /> : (wo.description || "—")}</td>
+      <td className="mono-data">{wo.quantity ?? "—"}</td>
+      <td><span className={`badge ${PRIORITY_BADGE[wo.priority]}`}>{wo.priority}</span></td>
+      <td>{wo.due_date || "—"}</td>
+      <td><span className={`badge ${STATUS_BADGE[wo.status]}`}>{wo.status.replace("_", " ")}</span></td>
+      <td style={{ whiteSpace: "nowrap" }}>
+        {editing ? (
+          <>
+            <button className="btn secondary" onClick={save} disabled={saving}>Save</button>{" "}
+            <button className="btn secondary" onClick={() => setEditing(false)}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <button className="btn secondary" onClick={() => setEditing(true)}>Edit</button>{" "}
+            <button className="btn secondary" onClick={remove}>Remove</button>
+          </>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function WorkOrderQueue({ machine }) {
+  const [workOrders, setWorkOrders] = useState([]);
+  const [error, setError] = useState("");
+  const [showFinished, setShowFinished] = useState(false);
+
+  async function load() {
+    try {
+      setWorkOrders(await api.machines.workOrders.list(machine.id));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [machine.id]);
+
+  const queue = workOrders
+    .filter((w) => w.status === "pending" || w.status === "in_progress")
+    .sort((a, b) => a.sequence - b.sequence);
+  const finished = workOrders
+    .filter((w) => w.status === "finished")
+    .sort((a, b) => (b.finished_at || "").localeCompare(a.finished_at || ""));
+
+  async function move(index, direction) {
+    const newQueue = [...queue];
+    const target = index + direction;
+    if (target < 0 || target >= newQueue.length) return;
+    [newQueue[index], newQueue[target]] = [newQueue[target], newQueue[index]];
+    await api.machines.workOrders.reorder(machine.id, newQueue.map((w) => w.id));
+    load();
+  }
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div className="section-title">Work order queue</div>
+      <div className="hint" style={{ marginBottom: 10 }}>
+        Planned by a supervisor, in priority order. The operator app shows this exact list — they pick a job from
+        here to start it; it can't be started any other way.
+      </div>
+      {error && <div className="error-text">{error}</div>}
+      {queue.length === 0 ? (
+        <div className="empty">No work orders queued. Add one below, or bulk import a planning sheet.</div>
+      ) : (
+        <table style={{ marginBottom: 10 }}>
+          <thead>
+            <tr><th></th><th>Job No</th><th>Description</th><th>Qty</th><th>Priority</th><th>Due</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {queue.map((wo, i) => (
+              <WorkOrderRow
+                key={wo.id}
+                machine={machine}
+                wo={wo}
+                isFirst={i === 0}
+                isLast={i === queue.length - 1}
+                onMoveUp={() => move(i, -1)}
+                onMoveDown={() => move(i, 1)}
+                onChanged={load}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div className="inline-form" style={{ marginBottom: 14 }}>
+        <AddWorkOrderForm machine={machine} onAdded={load} />
+        <BulkImportWorkOrders machine={machine} onImported={load} />
+      </div>
+
+      <button className="btn secondary" onClick={() => setShowFinished((s) => !s)}>
+        {showFinished ? "Hide" : "Show"} finished ({finished.length})
+      </button>
+      {showFinished && (
+        finished.length === 0 ? (
+          <div className="empty" style={{ marginTop: 8 }}>Nothing finished yet.</div>
+        ) : (
+          <table style={{ marginTop: 8 }}>
+            <thead><tr><th>Job No</th><th>Description</th><th>Finished</th></tr></thead>
+            <tbody>
+              {finished.map((w) => (
+                <tr key={w.id}>
+                  <td><strong>{w.job_no}</strong></td>
+                  <td>{w.description || "—"}</td>
+                  <td className="mono-data">{w.finished_at ? new Date(w.finished_at).toLocaleString() : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
     </div>
   );
 }
@@ -453,6 +789,8 @@ export default function Machines() {
                 {" "}
                 <button className="btn secondary" onClick={regenerateKey}>Regenerate key</button>
               </div>
+
+              <WorkOrderQueue machine={selected} />
 
               <FieldEditor machine={selected} optionLists={optionLists} onChanged={load} />
             </div>
