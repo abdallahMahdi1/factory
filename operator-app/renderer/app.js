@@ -90,16 +90,28 @@ function fmtDate(iso) {
 function renderQueueItem(wo, clickable, index, isActive) {
   const item = document.createElement("div");
   item.className = `queue-item${clickable ? "" : " disabled"}${isActive ? " current" : ""}`;
+  // Everything the supervisor entered, shown right in the list so the
+  // operator can size up a job (and spot the one they want) without
+  // having to open it first.
   const metaParts = [];
-  if (wo.quantity != null) metaParts.push(`Qty ${wo.quantity}`);
-  if (wo.dueDate) metaParts.push(`Due ${fmtDate(wo.dueDate)}`);
-  if (!clickable && wo.status === "in_progress" && !isActive) metaParts.push("Already in progress");
+  if (wo.process) metaParts.push(`<span class="qi-k">Process</span> ${wo.process}`);
+  if (wo.quantity != null) metaParts.push(`<span class="qi-k">Qty</span> ${wo.quantity}`);
+  if (wo.inputDiameter != null) metaParts.push(`<span class="qi-k">Dia</span> ${wo.inputDiameter}`);
+  if (wo.totalTolerance) metaParts.push(`<span class="qi-k">Tol</span> ${wo.totalTolerance}`);
+  if (wo.dueDate) metaParts.push(`<span class="qi-k">Due</span> ${fmtDate(wo.dueDate)}`);
+  if (!clickable && wo.status === "in_progress" && !isActive) metaParts.push(`<span class="qi-k">Already in progress</span>`);
+
+  // Instructions and remarks get their own line — they're the things worth
+  // reading before starting, so they shouldn't be buried among the numbers.
+  const notes = [wo.specialInstruction, wo.remarks].filter(Boolean);
+
   item.innerHTML = `
     <span class="qi-index">${index}</span>
     <div class="qi-main">
       <div class="qi-job">${wo.jobNo}</div>
       ${wo.description ? `<div class="qi-desc">${wo.description}</div>` : ""}
-      ${metaParts.length ? `<div class="qi-meta">${metaParts.join(" · ")}</div>` : ""}
+      ${metaParts.length ? `<div class="qi-meta">${metaParts.join(`<span class="qi-sep">·</span>`)}</div>` : ""}
+      ${notes.length ? `<div class="qi-notes">⚠ ${notes.join(" · ")}</div>` : ""}
     </div>
     ${isActive ? `<span class="current-badge">● RUNNING NOW</span>` : `<span class="priority-pill ${wo.priority}">${wo.priority}</span>`}
     ${clickable ? `<span class="qi-arrow">›</span>` : ""}
@@ -495,72 +507,56 @@ async function submitStartForm() {
   }
 }
 
-// ---------- shared reason-code entry (Pause, and Stop/Incomplete) ----------
-// Renders a numeric keypad + input into `containerEl`, matching the exact
-// look of the login screen's ID keypad. The operator types a short code
-// (e.g. "01"); as they type, a live preview shows which reason it matches
-// so they can confirm before submitting — this is what makes it safe to
-// use "type a code" instead of "tap a list" even with codes the operator
-// has to remember. Returns { setError } so the caller can report back an
-// async failure (e.g. the pause API call itself failing) into the same UI.
+// ---------- shared reason picker (Pause, and Stop/Incomplete) ----------
+// A filterable list rather than a plain <select>: with a real factory's
+// reason list running to 50+ codes (RS01…RS47, RM01…), a native dropdown
+// means a long scroll on a shop-floor screen. Typing in the filter box
+// narrows by BOTH code and label ("RS13", "x-head", "die"), so the
+// operator can find a reason whether they remember the code or only the
+// wording. Everything stays tappable — no keyboard required.
+// Returns { setError } so the caller can surface an async failure (e.g.
+// the pause API call itself failing) into the same UI.
 function buildCodeEntryUI(containerEl, { reasons, onMatch, placeholder }) {
   containerEl.innerHTML = `
-    <input class="big-input code-input" type="text" inputmode="numeric" placeholder="${placeholder || "e.g. 01"}" autofocus />
-    <div class="code-match hidden"></div>
+    <input class="text-input reason-filter" type="text" placeholder="${placeholder || "Search code or reason…"}" />
     <div class="error-text code-error"></div>
-    <div class="keypad code-keypad"></div>
-    <button class="btn huge submit-code-btn">Continue</button>
+    <div class="reason-options"></div>
   `;
-  const input = containerEl.querySelector(".code-input");
-  const matchEl = containerEl.querySelector(".code-match");
+  const filterInput = containerEl.querySelector(".reason-filter");
   const errorEl = containerEl.querySelector(".code-error");
-  const keypad = containerEl.querySelector(".code-keypad");
-  const submitBtn = containerEl.querySelector(".submit-code-btn");
+  const optionsEl = containerEl.querySelector(".reason-options");
+  const list = reasons || [];
 
-  function findMatch() {
-    const code = input.value.trim();
-    if (!code) return null;
-    return (reasons || []).find((r) => r.code && r.code === code) || null;
-  }
-  function updatePreview() {
-    errorEl.textContent = "";
-    const match = findMatch();
-    if (match) {
-      matchEl.innerHTML = `✓ <strong>${match.code}</strong> · ${match.label}`;
-      matchEl.classList.remove("hidden");
-    } else {
-      matchEl.classList.add("hidden");
-    }
-  }
+  function renderOptions() {
+    const q = filterInput.value.trim().toLowerCase();
+    const matches = q
+      ? list.filter((r) => `${r.code || ""} ${r.label}`.toLowerCase().includes(q))
+      : list;
 
-  const layout = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "back"];
-  for (const key of layout) {
-    const btn = document.createElement("button");
-    btn.textContent = key === "back" ? "⌫" : key === "clear" ? "C" : key;
-    btn.addEventListener("click", () => {
-      if (key === "clear") input.value = "";
-      else if (key === "back") input.value = input.value.slice(0, -1);
-      else input.value += key;
-      updatePreview();
-      input.focus();
-    });
-    keypad.appendChild(btn);
-  }
-
-  function submit() {
-    const match = findMatch();
-    if (!match) {
-      errorEl.textContent = reasons && reasons.length
-        ? "No reason found for that code — check with your supervisor."
-        : "No reason codes are set up for this machine yet — ask your supervisor.";
+    optionsEl.innerHTML = "";
+    if (list.length === 0) {
+      optionsEl.innerHTML = `<div class="reason-empty">No reasons are set up for this machine yet — ask your supervisor.</div>`;
       return;
     }
-    onMatch(match);
+    if (matches.length === 0) {
+      optionsEl.innerHTML = `<div class="reason-empty">Nothing matches "${filterInput.value.trim()}".</div>`;
+      return;
+    }
+    for (const r of matches) {
+      const btn = document.createElement("button");
+      btn.className = "reason-option";
+      btn.innerHTML = `
+        ${r.code ? `<span class="reason-option-code">${r.code}</span>` : ""}
+        <span class="reason-option-label">${r.label}</span>
+      `;
+      btn.addEventListener("click", () => onMatch(r));
+      optionsEl.appendChild(btn);
+    }
   }
-  submitBtn.addEventListener("click", submit);
-  input.addEventListener("input", updatePreview);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
-  setTimeout(() => input.focus(), 50);
+
+  filterInput.addEventListener("input", () => { errorEl.textContent = ""; renderOptions(); });
+  renderOptions();
+  setTimeout(() => filterInput.focus(), 50);
 
   return { setError: (msg) => { errorEl.textContent = msg; } };
 }

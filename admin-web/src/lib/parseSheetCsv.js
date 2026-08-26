@@ -94,7 +94,7 @@ export function parseSheetCsv(text) {
       groupLabel: groupCell || null,
       type: guessType(label),
       required: true,
-      stage: "start", // importer always lands fields on Start; move any to Stop afterward in the editor
+      stage: guessStage(groupCell, label),
       order: fields.length,
     });
   }
@@ -114,6 +114,18 @@ const NUMBER_HINTS = [
   "mm", "kg", "rpm", "mpm", "(m)", "(mtrs)", "count", "length", "dia", "speed",
   "thickness", "min", "max", "avg", "start", "stop", "id ", "id(", "%",
 ];
+// Guesses which screen a column belongs on from its group heading. On these
+// sheets, "Input"/"Raw Materials"/"Toolings" columns are filled in as the
+// job runs, while "Output"/"Performance"/"Scrap" columns are results known
+// at the end — so they default to the Output table. It's only a starting
+// point: the import preview lets you change any field's screen before
+// anything is saved.
+const STOP_GROUP_HINTS = ["output", "performance", "scrap", "result", "reject", "defect", "waste", "yield"];
+function guessStage(groupLabel, label) {
+  const hay = `${groupLabel || ""} ${label || ""}`.toLowerCase();
+  return STOP_GROUP_HINTS.some((h) => hay.includes(h)) ? "stop" : "start";
+}
+
 function guessType(label) {
   const lower = label.toLowerCase();
   return NUMBER_HINTS.some((hint) => lower.includes(hint)) ? "number" : "text";

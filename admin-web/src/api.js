@@ -137,5 +137,6 @@ export const api = {
 
   dashboard: {
     status: () => request("/dashboard/status"),
+    dailyReport: (machineId, date) => request(`/dashboard/daily-report?machineId=${machineId}&date=${date}`),
   },
 };

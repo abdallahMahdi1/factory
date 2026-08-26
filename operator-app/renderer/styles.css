@@ -248,7 +248,7 @@ h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
 .queue-empty { color: var(--muted); font-size: 14px; padding: 30px 0; text-align: center; }
 
 .queue-item {
-  display: flex; align-items: center; gap: 14px;
+  display: flex; align-items: flex-start; gap: 14px;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 16px 20px; cursor: pointer; text-align: left;
 }
@@ -270,10 +270,30 @@ h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
   flex: none; width: 28px; height: 28px; border-radius: 50%;
   background: var(--bg); border: 1px solid var(--border); color: var(--muted);
   font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  margin-top: 1px; /* aligns with the job-number line, not the card's top edge */
 }
+.queue-item .priority-pill, .queue-item .current-badge { margin-top: 5px; }
+.queue-item .qi-arrow { margin-top: 2px; }
 .queue-item .qi-job { font-size: 17px; font-weight: 700; }
-.queue-item .qi-desc { font-size: 13.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.queue-item .qi-meta { font-size: 12px; color: var(--muted); margin-top: 4px; display: flex; gap: 10px; }
+/* Wraps rather than truncating — cable descriptions run long
+   ("3CX50MM2+2CX25MM2 CU/MICA/XLPE/AL/HDPE/PA/GSWA/LSH") and cutting them
+   off with an ellipsis hides the part that distinguishes one job from
+   another. */
+.queue-item .qi-desc { font-size: 13.5px; color: var(--muted); margin-top: 3px; line-height: 1.35; }
+.queue-item .qi-meta {
+  font-size: 12.5px; color: var(--ink); margin-top: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+}
+/* Small dim caps for the field name, so the VALUE is what stands out
+   when scanning down a column of jobs. */
+.queue-item .qi-k {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); margin-right: 2px;
+}
+.queue-item .qi-sep { color: var(--border); }
+.queue-item .qi-notes {
+  font-size: 12.5px; color: var(--amber); margin-top: 6px; line-height: 1.35;
+}
 .queue-item .qi-arrow { font-size: 20px; color: var(--muted); }
 
 .priority-pill {
@@ -332,11 +352,27 @@ h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
 .dot.pending { background: var(--amber); }
 .dot.offline { background: var(--red); }
 
-/* ---------- Reason-code entry (Pause, Stop/Incomplete) ---------- */
-.code-entry { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.code-match {
-  font-size: 15px; color: var(--green); min-height: 22px;
-  background: rgba(63,157,108,0.12); padding: 6px 16px; border-radius: 100px;
-}
-.code-match strong { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+/* ---------- Reason picker (Pause, Stop/Incomplete) ---------- */
+.code-entry { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.reason-filter { width: 100%; max-width: 100%; }
 .code-error { min-height: 20px; }
+/* Scrolls rather than growing without limit — a real factory list can be
+   50+ codes, and the screen still has to fit the Cancel button above it. */
+.reason-options {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 52vh; overflow-y: auto; padding-right: 4px;
+}
+.reason-option {
+  display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  font-family: inherit; font-size: 16px; padding: 14px 18px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--ink);
+}
+.reason-option:hover, .reason-option:focus { border-color: var(--accent); outline: none; }
+.reason-option-code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 700; font-size: 14px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 10px; min-width: 62px; text-align: center; flex: none;
+}
+.reason-option-label { flex: 1; }
+.reason-empty { color: var(--muted); font-size: 14px; padding: 24px 0; text-align: center; }

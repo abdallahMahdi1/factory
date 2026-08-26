@@ -250,3 +250,54 @@ tr:hover td { background: #fafbfa; }
   background: #f0f1ee; padding: 3px 9px; border-radius: 6px; min-width: 32px; text-align: center;
 }
 .reason-label { flex: 1; font-size: 13.5px; }
+
+/* ---------- Daily report ---------- */
+.report-totals { display: flex; gap: 34px; flex-wrap: wrap; margin-bottom: 18px; }
+.report-total .rt-value { font-size: 26px; font-weight: 700; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.report-total .rt-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin-top: 2px;
+}
+
+/* One continuous strip representing the whole 24h, each segment sized in
+   proportion to its duration — the at-a-glance view before the detail table. */
+.day-bar { display: flex; height: 26px; border-radius: 6px; overflow: hidden; background: #eceeef; }
+.day-bar-seg { height: 100%; }
+.day-bar-seg.work { background: var(--green); }
+.day-bar-seg.pause { background: var(--amber); }
+.day-bar-seg.idle { background: #d7dbde; }
+.day-bar-scale {
+  display: flex; justify-content: space-between; font-size: 11px;
+  color: var(--muted); margin-top: 4px; font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.state-pill {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  padding: 3px 9px; border-radius: 100px; white-space: nowrap;
+}
+.state-pill.work { background: var(--green-bg); color: var(--green); }
+.state-pill.pause { background: var(--amber-bg); color: var(--amber); }
+.state-pill.idle { background: #eceeef; color: var(--muted); }
+
+.report-row.idle td { color: var(--muted); }
+.reason-code-tag {
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11.5px; font-weight: 700;
+  background: #f0f1ee; padding: 2px 7px; border-radius: 5px; margin-right: 7px;
+}
+
+/* ---------- Work order queue: full detail ---------- */
+/* The queue table now carries ten columns, so it scrolls sideways rather
+   than squeezing cable descriptions down to a few unreadable characters. */
+.wo-desc-cell { min-width: 220px; max-width: 340px; font-size: 12.5px; line-height: 1.35; }
+.wo-notes-cell { min-width: 170px; max-width: 260px; font-size: 12.5px; line-height: 1.35; }
+.wo-notes-cell .wo-remark { color: var(--muted); }
+
+/* Editing expands the row into a wrapping form — ten inputs crammed into
+   ten table cells would leave each one too narrow to actually type in. */
+.wo-edit-form {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
+  padding: 14px 12px; background: var(--bg); border-radius: 8px;
+}
+.wo-edit-actions { display: flex; align-items: flex-end; gap: 6px; white-space: nowrap; }
+.wo-table-scroll { overflow-x: auto; max-width: 100%; }
+.wo-table-scroll table { min-width: 1100px; }

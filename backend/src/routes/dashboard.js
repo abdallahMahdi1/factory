@@ -127,4 +127,165 @@ router.get("/status", (req, res) => {
   });
 });
 
+// ---- Daily timeline report: the full 24 hours for one machine ----
+// Answers "what happened on this machine today?" as one continuous,
+// gap-free list of rows: worked 1h on WO-123, paused 30m for RS03, idle
+// 20m, worked 2h... covering the whole day with nothing unaccounted for.
+//
+// Every row is derived, not stored: work segments come from sessions
+// minus their pauses, pause rows come from pause_events, and idle rows
+// are whatever time is left over between them. That means the report
+// stays correct even for sessions edited after the fact, and there's no
+// separate report table that could drift out of sync with reality.
+router.get("/daily-report", (req, res) => {
+  const { machineId, date } = req.query;
+  if (!machineId) return res.status(400).json({ error: "machineId is required" });
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: "date is required, formatted YYYY-MM-DD" });
+  }
+
+  const machine = db.prepare("SELECT id, name, code FROM machines WHERE id = ?").get(machineId);
+  if (!machine) return res.status(404).json({ error: "Machine not found" });
+
+  // The report day runs local-midnight to local-midnight. Constructing the
+  // bounds from the plain date string this way (rather than in UTC) is what
+  // makes "today" mean the operator's actual shift day.
+  const dayStart = new Date(`${date}T00:00:00`);
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const now = new Date();
+  // Never report past "now" for today — an in-progress day shouldn't show
+  // hours of phantom idle time stretching to midnight.
+  const reportEnd = dayEnd > now ? now : dayEnd;
+  if (reportEnd <= dayStart) {
+    return res.json({ machine, date, rows: [], totals: emptyTotals(), generatedAt: now.toISOString() });
+  }
+
+  // Any session that OVERLAPS the day, not just ones that started in it —
+  // a night-shift job running 22:00→06:00 belongs in both days' reports,
+  // clipped to each day's bounds.
+  const sessions = db
+    .prepare(
+      `SELECT s.*, o.name as operator_name, w.job_no as work_order_job_no, w.description as work_order_description
+       FROM sessions s
+       JOIN operators o ON o.id = s.operator_id
+       LEFT JOIN work_orders w ON w.id = s.work_order_id
+       WHERE s.machine_id = ?
+         AND s.started_at < ?
+         AND (s.ended_at IS NULL OR s.ended_at > ?)
+       ORDER BY s.started_at ASC`
+    )
+    .all(machineId, reportEnd.toISOString(), dayStart.toISOString());
+
+  const pauseReasonById = {};
+  for (const r of db.prepare("SELECT id, code, label FROM pause_reasons").all()) pauseReasonById[r.id] = r;
+  const stopReasonById = {};
+  for (const r of db.prepare("SELECT id, code, label FROM stop_reasons").all()) stopReasonById[r.id] = r;
+
+  const clamp = (d) => new Date(Math.min(Math.max(d.getTime(), dayStart.getTime()), reportEnd.getTime()));
+  const segments = [];
+
+  for (const s of sessions) {
+    const sStart = new Date(s.started_at);
+    const sEnd = s.ended_at ? new Date(s.ended_at) : reportEnd;
+    const pauses = db
+      .prepare("SELECT * FROM pause_events WHERE session_id = ? ORDER BY started_at ASC")
+      .all(s.id);
+
+    const jobLabel = s.work_order_job_no || "(no work order)";
+    const stopReason = s.stop_reason_id ? stopReasonById[s.stop_reason_id] : null;
+
+    // Walk the session start→end, emitting a "work" segment for each
+    // stretch between pauses, and a "pause" segment for each pause.
+    let cursor = sStart;
+    for (const p of pauses) {
+      const pStart = new Date(p.started_at);
+      const pEnd = p.ended_at ? new Date(p.ended_at) : sEnd;
+      if (pStart > cursor) {
+        segments.push({ kind: "work", from: cursor, to: pStart, session: s, jobLabel, stopReason });
+      }
+      const reason = p.reason_id ? pauseReasonById[p.reason_id] : null;
+      segments.push({ kind: "pause", from: pStart, to: pEnd, session: s, jobLabel, reason });
+      if (pEnd > cursor) cursor = pEnd;
+    }
+    if (sEnd > cursor) {
+      segments.push({ kind: "work", from: cursor, to: sEnd, session: s, jobLabel, stopReason });
+    }
+  }
+
+  // Clip everything to the day, drop anything that falls entirely outside
+  // it or collapses to zero length once clipped.
+  const clipped = segments
+    .map((seg) => ({ ...seg, from: clamp(seg.from), to: clamp(seg.to) }))
+    .filter((seg) => seg.to > seg.from)
+    .sort((a, b) => a.from - b.from);
+
+  // Fill every remaining gap (including before the first segment and after
+  // the last) with explicit idle rows, so the rows always add up to the
+  // full elapsed day with nothing unaccounted for.
+  const rows = [];
+  let cursor = dayStart;
+  const pushIdle = (from, to) => {
+    if (to > from) rows.push({ kind: "idle", startedAt: from.toISOString(), endedAt: to.toISOString(), minutes: minutesBetween(from, to) });
+  };
+
+  for (const seg of clipped) {
+    if (seg.from > cursor) pushIdle(cursor, seg.from);
+    if (seg.from < cursor) {
+      // Overlapping segments shouldn't happen (one machine runs one job at
+      // a time), but if data is ever inconsistent, skip rather than emit a
+      // negative-duration row.
+      if (seg.to <= cursor) continue;
+      seg.from = cursor;
+    }
+    rows.push({
+      kind: seg.kind,
+      startedAt: seg.from.toISOString(),
+      endedAt: seg.to.toISOString(),
+      minutes: minutesBetween(seg.from, seg.to),
+      sessionId: seg.session.id,
+      operatorName: seg.session.operator_name,
+      jobNo: seg.jobLabel,
+      jobDescription: seg.session.work_order_description || null,
+      sessionStatus: seg.session.status,
+      reasonCode: seg.kind === "pause" ? (seg.reason?.code || null) : (seg.stopReason?.code || null),
+      reasonLabel: seg.kind === "pause"
+        ? (seg.reason?.label || "No reason given")
+        : (seg.stopReason?.label || null),
+    });
+    cursor = seg.to;
+  }
+  pushIdle(cursor, reportEnd);
+
+  const totals = emptyTotals();
+  for (const r of rows) {
+    if (r.kind === "work") totals.workMinutes += r.minutes;
+    else if (r.kind === "pause") totals.pauseMinutes += r.minutes;
+    else totals.idleMinutes += r.minutes;
+  }
+  totals.totalMinutes = totals.workMinutes + totals.pauseMinutes + totals.idleMinutes;
+  totals.utilizationPercent = totals.totalMinutes > 0
+    ? Math.round((totals.workMinutes / totals.totalMinutes) * 1000) / 10
+    : 0;
+
+  // Downtime grouped by reason — the "why did we lose time today" summary.
+  const byReason = {};
+  for (const r of rows) {
+    if (r.kind !== "pause") continue;
+    const key = r.reasonCode ? `${r.reasonCode} — ${r.reasonLabel}` : r.reasonLabel;
+    byReason[key] = (byReason[key] || 0) + r.minutes;
+  }
+  const downtimeByReason = Object.entries(byReason)
+    .map(([reason, minutes]) => ({ reason, minutes }))
+    .sort((a, b) => b.minutes - a.minutes);
+
+  res.json({ machine, date, rows, totals, downtimeByReason, generatedAt: now.toISOString() });
+});
+
+function emptyTotals() {
+  return { workMinutes: 0, pauseMinutes: 0, idleMinutes: 0, totalMinutes: 0, utilizationPercent: 0 };
+}
+function minutesBetween(a, b) {
+  return Math.round(((b - a) / 60000) * 10) / 10;
+}
+
 module.exports = router;

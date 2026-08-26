@@ -60,6 +60,34 @@ function ImportFromSheet({ onImported }) {
     setWarning(warning || "");
   }
 
+  async function handleFile(file) {
+    if (!file) return;
+    setError("");
+    setWarning("");
+    try {
+      const buf = await file.arrayBuffer();
+      // Lazy-loaded: the Excel library is large and only needed here.
+      const { workbookToSheetCsv } = await import("../lib/workbookToSheetCsv.js");
+      const { csv, sheetName, warning: readWarning } = workbookToSheetCsv(buf);
+      if (!csv) {
+        setError(readWarning || "Couldn't read any header rows from that file.");
+        return;
+      }
+      // Route the Excel content through the SAME parser the paste box uses,
+      // so both paths behave identically and only need fixing in one place.
+      const { fields, warning } = parseSheetCsv(csv);
+      if (fields.length === 0) {
+        setText(csv); // show what was read, so the mismatch is visible
+        setError(warning || "Couldn't find a group row and a field-label row in that sheet.");
+        return;
+      }
+      setPreview(fields);
+      setWarning([sheetName ? `Read sheet "${sheetName}".` : "", warning || ""].filter(Boolean).join(" "));
+    } catch (err) {
+      setError(`Couldn't read that file: ${err.message}`);
+    }
+  }
+
   function updatePreviewField(i, patch) {
     setPreview((prev) => prev.map((f, idx) => (idx === i ? { ...f, ...patch } : f)));
   }
@@ -94,10 +122,22 @@ function ImportFromSheet({ onImported }) {
         <h2>Import fields from a production sheet</h2>
         {!preview ? (
           <>
-            <div className="hint" style={{ marginBottom: 10 }}>
-              Paste the CSV of your sheet below (export it from Excel as CSV first). This reads a group header row
-              (e.g. "Input", "Output", "Raw Materials") and the field-label row underneath it — the same shape as a
-              typical daily production report.
+            <div className="section-title">Upload the Excel sheet</div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Pick your production report (.xlsx or .xls). It reads the group header row (e.g. "Input", "Output",
+              "Raw Materials") and the field-label row underneath it, then guesses each column's type and which
+              screen it belongs on. You review and adjust everything before anything is saved.
+            </div>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.xlsm"
+              onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }}
+              style={{ marginBottom: 18 }}
+            />
+
+            <div className="section-title">Or paste CSV</div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Same two-row header shape: the group row, then the field-label row directly underneath.
             </div>
             <textarea
               className="mono-data"
@@ -446,8 +486,34 @@ function BulkImportWorkOrders({ machine, onImported }) {
   function runParse() {
     setError("");
     const { workOrders, warning } = parseWorkOrdersCsv(text);
-    setPreview(workOrders);
+    // Paste-parsed rows have no cancelled/include flags of their own, so
+    // default them to included — the preview's tick column works the same
+    // way for both input paths.
+    setPreview(workOrders.map((w) => ({ ...w, _include: true, _cancelled: false })));
     setWarning(warning || "");
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    setError("");
+    setWarning("");
+    try {
+      const buf = await file.arrayBuffer();
+      // Loaded on demand: the Excel library is ~340KB, and importing it at
+      // the top of the file would make every admin page load carry that
+      // weight for a feature used occasionally. This keeps the everyday
+      // dashboard/sessions pages light.
+      const { parseWorkOrdersWorkbook } = await import("../lib/parseWorkOrdersWorkbook.js");
+      const { workOrders, warning, sheetName } = parseWorkOrdersWorkbook(buf);
+      if (workOrders.length === 0) {
+        setError(warning || "Couldn't find any work orders in that file.");
+        return;
+      }
+      setPreview(workOrders);
+      setWarning([sheetName ? `Read sheet "${sheetName}".` : "", warning || ""].filter(Boolean).join(" "));
+    } catch (err) {
+      setError(`Couldn't read that file: ${err.message}`);
+    }
   }
   function updateRow(i, patch) {
     setPreview((prev) => prev.map((w, idx) => (idx === i ? { ...w, ...patch } : w)));
@@ -459,7 +525,15 @@ function BulkImportWorkOrders({ machine, onImported }) {
     setSaving(true);
     setError("");
     try {
-      await api.machines.workOrders.bulkCreate(machine.id, preview);
+      const toSend = preview
+        .filter((w) => w._include !== false)
+        .map(({ _include, _cancelled, ...rest }) => rest);
+      if (toSend.length === 0) {
+        setError("Nothing ticked to import.");
+        setSaving(false);
+        return;
+      }
+      await api.machines.workOrders.bulkCreate(machine.id, toSend);
       setOpen(false);
       setText("");
       setPreview(null);
@@ -481,10 +555,24 @@ function BulkImportWorkOrders({ machine, onImported }) {
         <h2>Bulk import work orders</h2>
         {!preview ? (
           <>
-            <div className="hint" style={{ marginBottom: 10 }}>
-              Paste rows from a planning sheet — a header row followed by one row per job. Recognized columns: Job
-              No (required), Description, Process, Quantity, Priority, Due Date, Special Instruction, Remarks —
-              column names are matched loosely, so "Size & Type" or "Delivery Date" work fine too.
+            <div className="section-title">Upload an Excel file</div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Pick your planning sheet (.xlsx or .xls) and it's read automatically — the header row is found even if
+              it isn't the first row, merged cells carry down, totals rows are skipped, and struck-through
+              (cancelled) rows come in unticked. You review everything before anything is saved.
+            </div>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.xlsm"
+              onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }}
+              style={{ marginBottom: 18 }}
+            />
+
+            <div className="section-title">Or paste rows</div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              A header row followed by one row per job. Recognized columns: Job No (required), Description, Process,
+              Quantity, Priority, Due Date, Special Instruction, Remarks, Input Diameter, Total Tolerance — names are
+              matched loosely, so "Size & Type" or "Delivery Date" work fine too.
             </div>
             <textarea
               className="mono-data"
@@ -502,14 +590,22 @@ function BulkImportWorkOrders({ machine, onImported }) {
           <>
             {warning && <div className="error-text" style={{ marginBottom: 8 }}>{warning}</div>}
             <div className="hint" style={{ marginBottom: 10 }}>
-              Found {preview.length} work orders. These will be added to the END of the existing queue (nothing
+              Found {preview.length} rows ({preview.filter((w) => w._include !== false).length} ticked). These will be added to the END of the existing queue (nothing
               already planned gets removed). Review and adjust before confirming.
             </div>
             <table style={{ marginBottom: 4 }}>
-              <thead><tr><th>Job No</th><th>Description</th><th>Qty</th><th>Priority</th><th>Due</th><th></th></tr></thead>
+              <thead><tr><th></th><th>Job No</th><th>Description</th><th>Qty</th><th>Priority</th><th>Due</th><th></th></tr></thead>
               <tbody>
                 {preview.map((w, i) => (
-                  <tr key={i}>
+                  <tr key={i} style={w._include === false ? { opacity: 0.45 } : undefined}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={w._include !== false}
+                        onChange={(e) => updateRow(i, { _include: e.target.checked })}
+                        title={w._cancelled ? "Looks struck through (cancelled) in the sheet" : "Include this row"}
+                      />
+                    </td>
                     <td><input style={{ width: 120 }} value={w.jobNo} onChange={(e) => updateRow(i, { jobNo: e.target.value })} /></td>
                     <td><input style={{ width: 160 }} value={w.description || ""} onChange={(e) => updateRow(i, { description: e.target.value })} /></td>
                     <td><input style={{ width: 70 }} type="number" step="any" value={w.quantity ?? ""} onChange={(e) => updateRow(i, { quantity: e.target.value ? Number(e.target.value) : null })} /></td>
@@ -529,8 +625,8 @@ function BulkImportWorkOrders({ machine, onImported }) {
             {error && <div className="error-text">{error}</div>}
             <div className="actions">
               <button className="btn secondary" onClick={() => setPreview(null)}>Back</button>
-              <button className="btn" onClick={confirmImport} disabled={saving || preview.length === 0}>
-                {saving ? "Adding…" : `Add ${preview.length} work orders`}
+              <button className="btn" onClick={confirmImport} disabled={saving || preview.filter((w) => w._include !== false).length === 0}>
+                {saving ? "Adding…" : `Add ${preview.filter((w) => w._include !== false).length} work orders`}
               </button>
             </div>
           </>
@@ -542,16 +638,51 @@ function BulkImportWorkOrders({ machine, onImported }) {
 
 function WorkOrderRow({ machine, wo, isFirst, isLast, onChanged, onMoveUp, onMoveDown }) {
   const [editing, setEditing] = useState(false);
-  const [jobNo, setJobNo] = useState(wo.job_no);
-  const [description, setDescription] = useState(wo.description || "");
+  const [draft, setDraft] = useState({});
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // Every field is editable, not just job number and description — a
+  // supervisor correcting a diameter or tolerance shouldn't have to delete
+  // and re-add the whole work order.
+  function beginEdit() {
+    setDraft({
+      jobNo: wo.job_no || "",
+      description: wo.description || "",
+      process: wo.process || "",
+      quantity: wo.quantity ?? "",
+      priority: wo.priority || "normal",
+      dueDate: wo.due_date || "",
+      inputDiameter: wo.input_diameter ?? "",
+      totalTolerance: wo.total_tolerance || "",
+      specialInstruction: wo.special_instruction || "",
+      remarks: wo.remarks || "",
+    });
+    setError("");
+    setEditing(true);
+  }
+  const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
 
   async function save() {
     setSaving(true);
+    setError("");
     try {
-      await api.machines.workOrders.update(machine.id, wo.id, { jobNo, description: description || null });
+      await api.machines.workOrders.update(machine.id, wo.id, {
+        jobNo: draft.jobNo,
+        description: draft.description || null,
+        process: draft.process || null,
+        quantity: draft.quantity === "" ? null : Number(draft.quantity),
+        priority: draft.priority,
+        dueDate: draft.dueDate || null,
+        inputDiameter: draft.inputDiameter === "" ? null : Number(draft.inputDiameter),
+        totalTolerance: draft.totalTolerance || null,
+        specialInstruction: draft.specialInstruction || null,
+        remarks: draft.remarks || null,
+      });
       setEditing(false);
       onChanged();
+    } catch (err) {
+      setError(err.message);
     } finally {
       setSaving(false);
     }
@@ -562,30 +693,92 @@ function WorkOrderRow({ machine, wo, isFirst, isLast, onChanged, onMoveUp, onMov
     onChanged();
   }
 
+  // While editing, the row expands into a full-width form — trying to fit
+  // ten editable inputs into ten table cells makes every one unusably
+  // narrow.
+  if (editing) {
+    return (
+      <tr>
+        <td colSpan={11}>
+          <div className="wo-edit-form">
+            <div className="field" style={{ minWidth: 150 }}>
+              <label>Job No *</label>
+              <input value={draft.jobNo} onChange={(e) => set({ jobNo: e.target.value })} />
+            </div>
+            <div className="field" style={{ minWidth: 260, flex: 1 }}>
+              <label>Description</label>
+              <input value={draft.description} onChange={(e) => set({ description: e.target.value })} />
+            </div>
+            <div className="field" style={{ minWidth: 130 }}>
+              <label>Process</label>
+              <input value={draft.process} onChange={(e) => set({ process: e.target.value })} />
+            </div>
+            <div className="field" style={{ maxWidth: 90 }}>
+              <label>Qty</label>
+              <input type="number" step="any" value={draft.quantity} onChange={(e) => set({ quantity: e.target.value })} />
+            </div>
+            <div className="field" style={{ maxWidth: 110 }}>
+              <label>Priority</label>
+              <select value={draft.priority} onChange={(e) => set({ priority: e.target.value })}>
+                <option value="normal">Normal</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </div>
+            <div className="field" style={{ maxWidth: 150 }}>
+              <label>Due date</label>
+              <input type="date" value={draft.dueDate} onChange={(e) => set({ dueDate: e.target.value })} />
+            </div>
+            <div className="field" style={{ maxWidth: 110 }}>
+              <label>Input dia.</label>
+              <input type="number" step="any" value={draft.inputDiameter} onChange={(e) => set({ inputDiameter: e.target.value })} />
+            </div>
+            <div className="field" style={{ maxWidth: 120 }}>
+              <label>Tolerance</label>
+              <input value={draft.totalTolerance} onChange={(e) => set({ totalTolerance: e.target.value })} />
+            </div>
+            <div className="field" style={{ minWidth: 200, flex: 1 }}>
+              <label>Special instruction</label>
+              <input value={draft.specialInstruction} onChange={(e) => set({ specialInstruction: e.target.value })} />
+            </div>
+            <div className="field" style={{ minWidth: 180, flex: 1 }}>
+              <label>Remarks</label>
+              <input value={draft.remarks} onChange={(e) => set({ remarks: e.target.value })} />
+            </div>
+            <div className="wo-edit-actions">
+              <button className="btn" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>{" "}
+              <button className="btn secondary" onClick={() => setEditing(false)}>Cancel</button>
+            </div>
+            {error && <div className="error-text" style={{ width: "100%" }}>{error}</div>}
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
   return (
     <tr>
       <td style={{ whiteSpace: "nowrap" }}>
         <button className="btn secondary" onClick={onMoveUp} disabled={isFirst} style={{ padding: "2px 8px" }}>↑</button>{" "}
         <button className="btn secondary" onClick={onMoveDown} disabled={isLast} style={{ padding: "2px 8px" }}>↓</button>
       </td>
-      <td>{editing ? <input style={{ width: 120 }} value={jobNo} onChange={(e) => setJobNo(e.target.value)} /> : <strong>{wo.job_no}</strong>}</td>
-      <td>{editing ? <input style={{ width: 160 }} value={description} onChange={(e) => setDescription(e.target.value)} /> : (wo.description || "—")}</td>
+      <td><strong>{wo.job_no}</strong></td>
+      <td className="wo-desc-cell">{wo.description || "—"}</td>
+      <td>{wo.process || "—"}</td>
       <td className="mono-data">{wo.quantity ?? "—"}</td>
+      <td className="mono-data">{wo.input_diameter ?? "—"}</td>
+      <td className="mono-data">{wo.total_tolerance || "—"}</td>
       <td><span className={`badge ${PRIORITY_BADGE[wo.priority]}`}>{wo.priority}</span></td>
       <td>{wo.due_date || "—"}</td>
+      <td className="wo-notes-cell">
+        {wo.special_instruction && <div>{wo.special_instruction}</div>}
+        {wo.remarks && <div className="wo-remark">{wo.remarks}</div>}
+        {!wo.special_instruction && !wo.remarks && "—"}
+      </td>
       <td><span className={`badge ${STATUS_BADGE[wo.status]}`}>{wo.status.replace("_", " ")}</span></td>
       <td style={{ whiteSpace: "nowrap" }}>
-        {editing ? (
-          <>
-            <button className="btn secondary" onClick={save} disabled={saving}>Save</button>{" "}
-            <button className="btn secondary" onClick={() => setEditing(false)}>Cancel</button>
-          </>
-        ) : (
-          <>
-            <button className="btn secondary" onClick={() => setEditing(true)}>Edit</button>{" "}
-            <button className="btn secondary" onClick={remove}>Remove</button>
-          </>
-        )}
+        <button className="btn secondary" onClick={beginEdit}>Edit</button>{" "}
+        <button className="btn secondary" onClick={remove}>Remove</button>
       </td>
     </tr>
   );
@@ -632,9 +825,10 @@ function WorkOrderQueue({ machine }) {
       {queue.length === 0 ? (
         <div className="empty">No work orders queued. Add one below, or bulk import a planning sheet.</div>
       ) : (
+        <div className="wo-table-scroll">
         <table style={{ marginBottom: 10 }}>
           <thead>
-            <tr><th></th><th>Job No</th><th>Description</th><th>Qty</th><th>Priority</th><th>Due</th><th>Status</th><th></th></tr>
+            <tr><th></th><th>Job No</th><th>Description</th><th>Process</th><th>Qty</th><th>Input dia.</th><th>Tolerance</th><th>Priority</th><th>Due</th><th>Instruction / Remarks</th><th>Status</th><th></th></tr>
           </thead>
           <tbody>
             {queue.map((wo, i) => (
@@ -651,6 +845,7 @@ function WorkOrderQueue({ machine }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       <div className="inline-form" style={{ marginBottom: 14 }}>
@@ -665,18 +860,24 @@ function WorkOrderQueue({ machine }) {
         finished.length === 0 ? (
           <div className="empty" style={{ marginTop: 8 }}>Nothing finished yet.</div>
         ) : (
+          <div className="wo-table-scroll">
           <table style={{ marginTop: 8 }}>
-            <thead><tr><th>Job No</th><th>Description</th><th>Finished</th></tr></thead>
+            <thead><tr><th>Job No</th><th>Description</th><th>Process</th><th>Qty</th><th>Input dia.</th><th>Tolerance</th><th>Finished</th></tr></thead>
             <tbody>
               {finished.map((w) => (
                 <tr key={w.id}>
                   <td><strong>{w.job_no}</strong></td>
-                  <td>{w.description || "—"}</td>
+                  <td className="wo-desc-cell">{w.description || "—"}</td>
+                  <td>{w.process || "—"}</td>
+                  <td className="mono-data">{w.quantity ?? "—"}</td>
+                  <td className="mono-data">{w.input_diameter ?? "—"}</td>
+                  <td className="mono-data">{w.total_tolerance || "—"}</td>
                   <td className="mono-data">{w.finished_at ? new Date(w.finished_at).toLocaleString() : "—"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )
       )}
     </div>

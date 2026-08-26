@@ -7,6 +7,7 @@ import Machines from "./pages/Machines.jsx";
 import Operators from "./pages/Operators.jsx";
 import MasterLists from "./pages/MasterLists.jsx";
 import Sessions from "./pages/Sessions.jsx";
+import Report from "./pages/Report.jsx";
 
 function RequireAuth({ children }) {
   if (!isLoggedIn()) return <Navigate to="/login" replace />;
@@ -22,6 +23,7 @@ function Shell({ children }) {
         <nav>
           <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>Dashboard</NavLink>
           <NavLink to="/sessions" className={({ isActive }) => (isActive ? "active" : "")}>Sessions</NavLink>
+          <NavLink to="/report" className={({ isActive }) => (isActive ? "active" : "")}>Daily report</NavLink>
           <NavLink to="/machines" className={({ isActive }) => (isActive ? "active" : "")}>Machines</NavLink>
           <NavLink to="/operators" className={({ isActive }) => (isActive ? "active" : "")}>Operators</NavLink>
           <NavLink to="/lists" className={({ isActive }) => (isActive ? "active" : "")}>Master lists</NavLink>
@@ -42,6 +44,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<RequireAuth><Shell><Dashboard /></Shell></RequireAuth>} />
       <Route path="/sessions" element={<RequireAuth><Shell><Sessions /></Shell></RequireAuth>} />
+      <Route path="/report" element={<RequireAuth><Shell><Report /></Shell></RequireAuth>} />
       <Route path="/machines" element={<RequireAuth><Shell><Machines /></Shell></RequireAuth>} />
       <Route path="/operators" element={<RequireAuth><Shell><Operators /></Shell></RequireAuth>} />
       <Route path="/lists" element={<RequireAuth><Shell><MasterLists /></Shell></RequireAuth>} />
