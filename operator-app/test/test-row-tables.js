@@ -38,17 +38,17 @@ async function main() {
   const session = manager.startSession({
     operatorId: op.id, operatorName: op.name, workOrder: wo, runningHourStart: 500.25,
   });
-  assert(session.startRows.length === 0 && session.stopRows.length === 0, "session starts with empty row arrays");
+  assert(Object.keys(session.screenRows || {}).length === 0, "session starts with no screen rows");
   assert(manager.getStatus().pendingCount === 1, "start event queued (1 pending)");
 
   console.log("\n--- Add rows to Start table (progressively, like the real UI would) ---");
   const materialField = cfg.fields.find((f) => f.label === "Material");
   let updated = manager.updateRows({ table: "start", rows: [{ [materialField.id]: "opt-1" }] });
-  assert(updated.startRows.length === 1, "1 row added to start table locally");
+  assert(updated.screenRows.start.length === 1, "1 row added to start table locally");
   assert(manager.getStatus().pendingCount === 2, "update_rows event queued (2 pending)");
 
   updated = manager.updateRows({ table: "start", rows: [{ [materialField.id]: "opt-1" }, { [materialField.id]: "opt-2" }] });
-  assert(updated.startRows.length === 2, "2nd row added, overwriting the full row set");
+  assert(updated.screenRows.start.length === 2, "2nd row added, overwriting the full row set");
   assert(manager.getStatus().pendingCount === 3, "second update_rows event queued (3 pending)");
 
   console.log("\n--- Pause, resume ---");
@@ -59,7 +59,7 @@ async function main() {
 
   console.log("\n--- Add a row to the End table while running ---");
   manager.updateRows({ table: "stop", rows: [{ someKey: "value" }] });
-  assert(manager.getActiveSession().stopRows.length === 1, "end table has 1 row locally");
+  assert(manager.getActiveSession().screenRows.stop.length === 1, "end table has 1 row locally");
 
   console.log("\n--- Sync everything ---");
   const syncResult = await manager.runSyncCycle();

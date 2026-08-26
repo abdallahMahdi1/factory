@@ -32,11 +32,16 @@ CREATE TABLE IF NOT EXISTS option_items (
   active         INTEGER NOT NULL DEFAULT 1
 );
 
--- A question on a given machine's Start or Stop form. Admin decides, per
--- machine: free text, a number, or a dropdown pulling from a shared option
--- list; which stage it's captured on; and an optional group_label used
--- purely to visually section the form (e.g. "Input", "Output", "Raw
--- Materials") — it has no effect on data, only on how the form is drawn.
+-- A column on one of a machine's data tables. Admin decides, per machine:
+-- free text, a number, or a dropdown pulling from a shared option list;
+-- WHICH SCREEN (table) it appears on; and an optional group_label used
+-- purely to visually section that table.
+--
+-- `stage` is the screen key. "start" and "stop" are the two built-in
+-- screens (shown as Input and Output), but a machine can define any others
+-- it needs — "scrap", "toolings", "raw-materials" — and each becomes its
+-- own table in the operator app. Deliberately NOT constrained to a fixed
+-- set: the whole point is that a factory defines its own screens.
 CREATE TABLE IF NOT EXISTS machine_fields (
   id             TEXT PRIMARY KEY,
   machine_id     TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
@@ -45,8 +50,20 @@ CREATE TABLE IF NOT EXISTS machine_fields (
   option_list_id TEXT REFERENCES option_lists(id),
   required       INTEGER NOT NULL DEFAULT 1,
   sort_order     INTEGER NOT NULL DEFAULT 0,
-  stage          TEXT NOT NULL DEFAULT 'start' CHECK (stage IN ('start','stop')),
+  stage          TEXT NOT NULL DEFAULT 'start',
   group_label    TEXT
+);
+
+-- The screens (tables) a machine shows in the operator app, and in what
+-- order. "start" and "stop" always exist implicitly; rows here let a
+-- machine rename them ("Input" -> "Raw Material In") and add its own.
+CREATE TABLE IF NOT EXISTS machine_screens (
+  id          TEXT PRIMARY KEY,
+  machine_id  TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+  key         TEXT NOT NULL,   -- stable id used by machine_fields.stage
+  label       TEXT NOT NULL,   -- what the operator sees, e.g. "Scrap"
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(machine_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS operators (
@@ -118,12 +135,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   machine_id           TEXT NOT NULL REFERENCES machines(id),
   operator_id          TEXT NOT NULL REFERENCES operators(id),
   work_order_id        TEXT REFERENCES work_orders(id),
-  -- Each is a JSON ARRAY of row-objects: [{ [machineFieldId]: "text/number
-  -- or option_item id" }, ...] — one array entry per row the operator
-  -- added to that table. field_values = the Start table (stage='start'
-  -- columns), stop_field_values = the End table (stage='stop' columns).
-  -- Always at least one row once a session exists; can grow to as many as
-  -- the operator adds, and can be edited any time the job is open.
+  -- Rows the operator entered, keyed by SCREEN name:
+  --   { "start": [{fieldId: value}, ...], "output": [...], "scrap": [...] }
+  -- One key per screen the machine defines, one array entry per row added
+  -- to that screen's table. A machine can define any screens it likes
+  -- (Input/Output/Scrap/Toolings/…), so this can't be a fixed set of
+  -- columns.
+  --
+  -- field_values / stop_field_values below are the ORIGINAL two-screen
+  -- storage, kept so sessions recorded before custom screens existed still
+  -- read correctly. On read they're folded in as the "start"/"stop"
+  -- screens when table_rows has nothing for those keys; on write they're
+  -- also kept in sync for the built-ins. Nothing needs migrating.
+  table_rows           TEXT NOT NULL DEFAULT '{}',
   field_values         TEXT NOT NULL DEFAULT '[]',
   stop_field_values     TEXT NOT NULL DEFAULT '[]',
   -- A machine counter/hour-meter reading the operator types in (not a

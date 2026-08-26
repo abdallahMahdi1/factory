@@ -61,6 +61,13 @@ export const api = {
     // admin UI, so a 30-field machine doesn't need 30 separate requests.
     setFields: (id, fields) => request(`/machines/${id}/fields`, { method: "PUT", body: { fields } }),
 
+    screens: {
+      list: (machineId) => request(`/machines/${machineId}/screens`),
+      create: (machineId, label) => request(`/machines/${machineId}/screens`, { method: "POST", body: { label } }),
+      update: (machineId, key, data) => request(`/machines/${machineId}/screens/${key}`, { method: "PUT", body: data }),
+      remove: (machineId, key) => request(`/machines/${machineId}/screens/${key}`, { method: "DELETE" }),
+    },
+
     workOrders: {
       list: (machineId, status) => request(`/machines/${machineId}/work-orders${status ? `?status=${status}` : ""}`),
       create: (machineId, data) => request(`/machines/${machineId}/work-orders`, { method: "POST", body: data }),

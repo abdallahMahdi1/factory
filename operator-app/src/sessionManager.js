@@ -77,8 +77,10 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
       // A session always has at least an empty array here (never
       // undefined), so the UI can render an empty table immediately and
       // the operator adds rows as they go.
-      startRows: [],
-      stopRows: [],
+      // Rows keyed by screen: { start: [...], stop: [...], scrap: [...] }.
+      // A machine defines its own screens, so this can't be two fixed
+      // arrays any more.
+      screenRows: {},
     };
     localDb.setKV("active_session", session);
     localDb.enqueueEvent({
@@ -99,8 +101,8 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     const session = getActiveSession();
     if (!session) throw new Error("No active job.");
     if (table !== "start" && table !== "stop") throw new Error(`Invalid table: ${table}`);
-    if (table === "start") session.startRows = rows;
-    else session.stopRows = rows;
+    if (!session.screenRows || typeof session.screenRows !== "object") session.screenRows = {};
+    session.screenRows[table] = rows;
     localDb.setKV("active_session", session);
     localDb.enqueueEvent({
       eventId: randomUUID(),

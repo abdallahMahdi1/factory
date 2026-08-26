@@ -265,9 +265,8 @@ function buildFieldInput(field, value) {
 // and one row per entry in `rows`. Every cell edit and every add/remove
 // row immediately updates the in-memory session (so validation, e.g. "at
 // least 1 row", always sees the latest state) and schedules/perform a save.
-function renderRowTable(tableEl, fields, rows, tableName) {
+function renderRowTable(tableEl, fields, rows, tableName, addBtn) {
   tableEl.innerHTML = "";
-  const addBtn = $(tableName === "start" ? "start-table-add-row-btn" : "stop-table-add-row-btn");
   if (fields.length === 0) {
     addBtn.disabled = true;
     const tbody = document.createElement("tbody");
@@ -327,13 +326,27 @@ function renderRowTable(tableEl, fields, rows, tableName) {
   tableEl.appendChild(tbody);
 }
 
+// The machine's screens, each becoming its own table. Falls back to the
+// original two-screen shape when talking to an older backend that doesn't
+// send a screens list yet.
+function currentScreens() {
+  const screens = state.config?.screens;
+  if (Array.isArray(screens) && screens.length > 0) return screens;
+  return [
+    { key: "start", label: "Input", fields: state.config?.fields || [] },
+    { key: "stop", label: "Output", fields: state.config?.stopFields || [] },
+  ];
+}
 function currentRows(tableName) {
   const session = state.activeSession;
   if (!session) return [];
-  return tableName === "start" ? session.startRows : session.stopRows;
+  if (!session.screenRows || typeof session.screenRows !== "object") session.screenRows = {};
+  if (!Array.isArray(session.screenRows[tableName])) session.screenRows[tableName] = [];
+  return session.screenRows[tableName];
 }
 function currentFields(tableName) {
-  return tableName === "start" ? (state.config?.fields || []) : (state.config?.stopFields || []);
+  const screen = currentScreens().find((sc) => sc.key === tableName);
+  return screen ? (screen.fields || []) : [];
 }
 
 function scheduleRowSave(tableName) {
@@ -377,9 +390,44 @@ function removeRow(tableName, index) {
   renderRunningTables();
   saveRows(tableName);
 }
+// Builds one titled section (heading + Add row button + table) per screen
+// the machine defines. Rebuilt on every render rather than diffed — the
+// list is short, and rebuilding keeps the row-object closures and the DOM
+// guaranteed in sync, which is exactly what went wrong when they drifted
+// apart before.
 function renderRunningTables() {
-  renderRowTable($("start-table"), currentFields("start"), currentRows("start"), "start");
-  renderRowTable($("stop-table"), currentFields("stop"), currentRows("stop"), "stop");
+  const host = $("screen-tables");
+  if (!host) return;
+  host.innerHTML = "";
+
+  for (const screen of currentScreens()) {
+    const section = document.createElement("div");
+    section.className = "table-section";
+
+    const header = document.createElement("div");
+    header.className = "table-section-header";
+    const title = document.createElement("div");
+    title.className = "section-title";
+    title.textContent = screen.label || screen.key;
+    const addBtn = document.createElement("button");
+    addBtn.className = "btn secondary";
+    addBtn.textContent = "+ Add row";
+    addBtn.addEventListener("click", () => addRow(screen.key));
+    header.appendChild(title);
+    header.appendChild(addBtn);
+
+    const scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    const table = document.createElement("table");
+    table.className = "row-table";
+    scroll.appendChild(table);
+
+    section.appendChild(header);
+    section.appendChild(scroll);
+    host.appendChild(section);
+
+    renderRowTable(table, screen.fields || [], currentRows(screen.key), screen.key, addBtn);
+  }
 }
 
 function renderStartForm() {
@@ -604,11 +652,14 @@ function openStopScreen() {
 function chooseStopStatus(status) {
   if (status === "finished") {
     const session = state.activeSession;
-    const startCount = (session?.startRows || []).length;
-    const stopCount = (session?.stopRows || []).length;
-    if (startCount < 1 || stopCount < 1) {
-      $("stop-choice-error").textContent =
-        "Add at least one row to both the Input table and the Output table before finishing.";
+    // Every screen that actually has columns configured needs at least one
+    // row before the job can be called finished — a machine with a Scrap
+    // table shouldn't be finishable with Scrap left blank.
+    const screensWithFields = currentScreens().filter((sc) => (sc.fields || []).length > 0);
+    const emptyScreens = screensWithFields.filter((sc) => currentRows(sc.key).length === 0);
+    if (emptyScreens.length > 0) {
+      const names = emptyScreens.map((sc) => sc.label || sc.key).join(", ");
+      $("stop-choice-error").textContent = `Add at least one row to ${names} before finishing.`;
       return;
     }
   }
@@ -666,8 +717,6 @@ function wireEvents() {
   $("form-cancel-btn").addEventListener("click", () => { selectedWorkOrder = null; showScreen("screen-home"); });
   $("form-submit-btn").addEventListener("click", submitStartForm);
 
-  $("start-table-add-row-btn").addEventListener("click", () => addRow("start"));
-  $("stop-table-add-row-btn").addEventListener("click", () => addRow("stop"));
 
   $("pause-btn").addEventListener("click", openPauseScreen);
   $("pause-form-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });

@@ -20,4 +20,30 @@ function parseRows(raw) {
   return [];
 }
 
-module.exports = { parseRows };
+// A session's rows for EVERY screen, as { screenKey: [rowObject, ...] }.
+//
+// Reads the newer table_rows column, then folds in the two original
+// columns for the built-in screens when table_rows doesn't already carry
+// them — so sessions recorded before custom screens existed still show
+// their Input/Output data with no migration step.
+function parseAllScreenRows(session) {
+  let byScreen = {};
+  if (session.table_rows) {
+    try {
+      const parsed = JSON.parse(session.table_rows);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) byScreen = parsed;
+    } catch { /* fall through to the legacy columns */ }
+  }
+  for (const [key, column] of [["start", "field_values"], ["stop", "stop_field_values"]]) {
+    if (!Array.isArray(byScreen[key]) || byScreen[key].length === 0) {
+      const legacy = parseRows(session[column]);
+      if (legacy.length > 0) byScreen[key] = legacy;
+    }
+  }
+  for (const key of Object.keys(byScreen)) {
+    if (!Array.isArray(byScreen[key])) byScreen[key] = [];
+  }
+  return byScreen;
+}
+
+module.exports = { parseRows, parseAllScreenRows };

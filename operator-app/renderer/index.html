@@ -104,21 +104,10 @@
         </div>
       </div>
 
-      <div class="table-section">
-        <div class="table-section-header">
-          <div class="section-title">Input</div>
-          <button class="btn secondary" id="start-table-add-row-btn">+ Add row</button>
-        </div>
-        <div class="table-scroll"><table id="start-table" class="row-table"></table></div>
-      </div>
-
-      <div class="table-section">
-        <div class="table-section-header">
-          <div class="section-title">Output</div>
-          <button class="btn secondary" id="stop-table-add-row-btn">+ Add row</button>
-        </div>
-        <div class="table-scroll"><table id="stop-table" class="row-table"></table></div>
-      </div>
+      <!-- One section per screen the machine defines — built entirely in
+           JS, since the number of tables and their names come from the
+           machine's own configuration, not from this file. -->
+      <div id="screen-tables"></div>
     </section>
 
     <!-- Read-only work-order list, reachable from the Running screen. The

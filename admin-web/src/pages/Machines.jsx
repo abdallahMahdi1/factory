@@ -180,8 +180,7 @@ function ImportFromSheet({ onImported }) {
                     </td>
                     <td>
                       <select value={f.stage} onChange={(e) => updatePreviewField(i, { stage: e.target.value })}>
-                        <option value="start">Start</option>
-                        <option value="stop">Stop</option>
+                        {screensOf(machine).map((sc) => <option key={sc.key} value={sc.key}>{sc.label}</option>)}
                       </select>
                     </td>
                     <td><button className="btn secondary" onClick={() => removePreviewField(i)}>Remove</button></td>
@@ -201,6 +200,14 @@ function ImportFromSheet({ onImported }) {
       </div>
     </div>
   );
+}
+
+// A machine's screens always include the two built-ins, so a dropdown
+// still works for machines that have never customised anything.
+function screensOf(machine) {
+  const list = machine?.screens;
+  if (Array.isArray(list) && list.length > 0) return list;
+  return [{ key: "start", label: "Input" }, { key: "stop", label: "Output" }];
 }
 
 function AddFieldForm({ machine, optionLists, onChanged }) {
@@ -263,8 +270,7 @@ function AddFieldForm({ machine, optionLists, onChanged }) {
       <div className="field" style={{ minWidth: 100 }}>
         <label>Screen</label>
         <select value={stage} onChange={(e) => setStage(e.target.value)}>
-          <option value="start">Start</option>
-          <option value="stop">Stop</option>
+          {screensOf(machine).map((sc) => <option key={sc.key} value={sc.key}>{sc.label}</option>)}
         </select>
       </div>
       <div className="field" style={{ minWidth: 90 }}>
@@ -354,8 +360,6 @@ function FieldRow({ machine, field, onChanged }) {
 }
 
 function FieldEditor({ machine, optionLists, onChanged }) {
-  const startFields = machine.fields.filter((f) => f.stage === "start");
-  const stopFields = machine.fields.filter((f) => f.stage === "stop");
 
   function renderTable(fields, title, hint) {
     return (
@@ -378,12 +382,116 @@ function FieldEditor({ machine, optionLists, onChanged }) {
     );
   }
 
+  const screens = screensOf(machine);
   return (
     <div>
-      {renderTable(startFields, "Input fields", "Columns of the operator's Input table — filled in as rows added throughout the job (material, size, work order details, etc).")}
-      {renderTable(stopFields, "Output fields", "Columns of the operator's Output table — filled in as rows added throughout the job (results, measurements, scrap, etc).")}
+      <ScreenManager machine={machine} onChanged={onChanged} />
+      {screens.map((sc) => (
+        <div key={sc.key}>
+          {renderTable(
+            machine.fields.filter((f) => f.stage === sc.key),
+            `${sc.label} fields`,
+            `Columns of the operator's "${sc.label}" table — filled in as rows are added throughout the job.`
+          )}
+        </div>
+      ))}
+      {/* Any field whose screen no longer exists would otherwise vanish
+          from this page while still being sent to the operator app. */}
+      {(() => {
+        const known = new Set(screens.map((sc) => sc.key));
+        const orphans = machine.fields.filter((f) => !known.has(f.stage));
+        return orphans.length === 0 ? null : renderTable(
+          orphans,
+          "Fields on removed screens",
+          "These fields point at a screen that no longer exists. Move them to a current screen, or delete them."
+        );
+      })()}
       <div className="section-title">Add a field</div>
       <AddFieldForm machine={machine} optionLists={optionLists} onChanged={onChanged} />
+    </div>
+  );
+}
+
+// Create, rename, reorder and remove the tables a machine shows in the
+// operator app. The two built-ins can be renamed but not removed, since
+// every machine needs somewhere to put its fields.
+function ScreenManager({ machine, onChanged }) {
+  const [newLabel, setNewLabel] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const screens = screensOf(machine);
+
+  async function run(fn) {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function add(e) {
+    e.preventDefault();
+    if (!newLabel.trim()) return;
+    await run(async () => {
+      await api.machines.screens.create(machine.id, newLabel.trim());
+      setNewLabel("");
+    });
+  }
+  async function rename(sc) {
+    const label = window.prompt(`Rename "${sc.label}" to:`, sc.label);
+    if (!label || label.trim() === sc.label) return;
+    await run(() => api.machines.screens.update(machine.id, sc.key, { label: label.trim() }));
+  }
+  async function move(sc, delta) {
+    const ordered = [...screens];
+    const i = ordered.findIndex((x) => x.key === sc.key);
+    const j = i + delta;
+    if (j < 0 || j >= ordered.length) return;
+    [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
+    await run(async () => {
+      for (let idx = 0; idx < ordered.length; idx++) {
+        await api.machines.screens.update(machine.id, ordered[idx].key, { sortOrder: idx });
+      }
+    });
+  }
+  async function remove(sc) {
+    if (!window.confirm(`Remove the "${sc.label}" screen?`)) return;
+    await run(() => api.machines.screens.remove(machine.id, sc.key));
+  }
+
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div className="section-title">Screens (tables in the operator app)</div>
+      <div className="hint" style={{ marginBottom: 10 }}>
+        Each screen becomes its own table on the operator's job page, in this order. Every table stays open and
+        editable for the whole job. Input and Output can be renamed but not removed.
+      </div>
+      <div className="screen-chips">
+        {screens.map((sc, i) => (
+          <div className="screen-chip" key={sc.key}>
+            <span className="screen-chip-label">{sc.label}</span>
+            <span className="screen-chip-count">
+              {machine.fields.filter((f) => f.stage === sc.key).length} fields
+            </span>
+            <button className="btn secondary" disabled={busy || i === 0} onClick={() => move(sc, -1)} title="Move up">↑</button>
+            <button className="btn secondary" disabled={busy || i === screens.length - 1} onClick={() => move(sc, 1)} title="Move down">↓</button>
+            <button className="btn secondary" disabled={busy} onClick={() => rename(sc)}>Rename</button>
+            {!sc.builtin && <button className="btn secondary" disabled={busy} onClick={() => remove(sc)}>Remove</button>}
+          </div>
+        ))}
+      </div>
+      <form className="inline-form" style={{ marginTop: 10 }} onSubmit={add}>
+        <div className="field" style={{ minWidth: 200 }}>
+          <label>New screen name</label>
+          <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Scrap" />
+        </div>
+        <button className="btn secondary" disabled={busy || !newLabel.trim()}>Add screen</button>
+      </form>
+      {error && <div className="error-text">{error}</div>}
     </div>
   );
 }

@@ -83,8 +83,36 @@ router.get("/config", (req, res) => {
     finishedAt: w.finished_at,
   });
 
+  // Built-ins plus whatever this machine defined, same shape the admin
+  // API returns. Any field whose stage doesn't match a known screen would
+  // otherwise be invisible, so unknown stages surface as their own screen
+  // rather than being silently dropped.
+  const customScreens = db
+    .prepare("SELECT key, label, sort_order FROM machine_screens WHERE machine_id = ? ORDER BY sort_order ASC")
+    .all(machine.id);
+  const screenMap = new Map([
+    ["start", { key: "start", label: "Input", sort_order: 0 }],
+    ["stop", { key: "stop", label: "Output", sort_order: 1 }],
+  ]);
+  for (const c of customScreens) {
+    const ex = screenMap.get(c.key);
+    if (ex) { ex.label = c.label; ex.sort_order = c.sort_order; }
+    else screenMap.set(c.key, { key: c.key, label: c.label, sort_order: c.sort_order });
+  }
+  for (const f of rawFields) {
+    if (!screenMap.has(f.stage)) screenMap.set(f.stage, { key: f.stage, label: f.stage, sort_order: 99 });
+  }
+  const screens = [...screenMap.values()].sort((a, b) => a.sort_order - b.sort_order);
+
   res.json({
     machine: { id: machine.id, name: machine.name, code: machine.code },
+    // Every screen this machine shows, in order, each with its own
+    // columns — the operator app renders one table per entry.
+    screens: screens.map((sc) => ({
+      key: sc.key,
+      label: sc.label,
+      fields: rawFields.filter((f) => f.stage === sc.key),
+    })),
     // Kept split by stage here so the operator app doesn't need to filter
     // on every render — "fields" is exactly what belongs on the Start
     // screen, "stopFields" exactly what belongs on the Stop screen.
@@ -167,11 +195,26 @@ router.post("/sync", (req, res) => {
         // every other event type.
         case "update_rows": {
           const { sessionId, table, rows } = payload;
-          if (table !== "start" && table !== "stop") {
-            throw new Error(`table must be "start" or "stop", got: ${table}`);
+          if (!table || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(table)) {
+            throw new Error(`invalid table key: ${table}`);
           }
-          const column = table === "start" ? "field_values" : "stop_field_values";
-          db.prepare(`UPDATE sessions SET ${column} = ? WHERE id = ?`).run(JSON.stringify(rows || []), sessionId);
+          const sess = db.prepare("SELECT table_rows FROM sessions WHERE id = ?").get(sessionId);
+          if (!sess) throw new Error(`unknown session: ${sessionId}`);
+
+          let byScreen = {};
+          try {
+            const parsed = JSON.parse(sess.table_rows || "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) byScreen = parsed;
+          } catch { /* corrupt or empty — start fresh rather than fail the sync */ }
+          byScreen[table] = rows || [];
+          db.prepare("UPDATE sessions SET table_rows = ? WHERE id = ?").run(JSON.stringify(byScreen), sessionId);
+
+          // Mirror the two built-in screens into their original columns so
+          // anything still reading those keeps seeing correct data.
+          if (table === "start" || table === "stop") {
+            const column = table === "start" ? "field_values" : "stop_field_values";
+            db.prepare(`UPDATE sessions SET ${column} = ? WHERE id = ?`).run(JSON.stringify(rows || []), sessionId);
+          }
           break;
         }
         case "stop": {
