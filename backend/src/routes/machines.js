@@ -223,6 +223,78 @@ router.put("/:id/fields", (req, res) => {
   res.json(fieldsForMachine(req.params.id));
 });
 
+// ---- Publishing queue changes to operators ----
+
+// How far down the queue counts as "the plan". Edits below this don't
+// disturb operators, because they're too far out to be what anyone is
+// about to run.
+const PLAN_WATCH_DEPTH = 10;
+
+// The bits of a work order an operator would actually act on. Deliberately
+// NOT every column — a supervisor fixing a typo in Remarks shouldn't
+// trigger a shop-floor alert, but a changed job number, quantity, priority
+// or ORDER should.
+function planSnapshot(machineId) {
+  const rows = db
+    .prepare(
+      `SELECT id, job_no, description, process, quantity, priority, due_date, status
+       FROM work_orders
+       WHERE machine_id = ? AND status IN ('pending','in_progress')
+       ORDER BY sequence ASC, created_at ASC
+       LIMIT ?`
+    )
+    .all(machineId, PLAN_WATCH_DEPTH);
+  return JSON.stringify(rows);
+}
+
+// What the operator app is currently allowed to see as "the plan".
+router.get("/:id/plan", (req, res) => {
+  const m = db.prepare("SELECT plan_version, plan_changed_at, plan_snapshot FROM machines WHERE id = ?").get(req.params.id);
+  if (!m) return res.status(404).json({ error: "Machine not found" });
+  res.json({
+    planVersion: m.plan_version,
+    planChangedAt: m.plan_changed_at,
+    hasUnpublishedChanges: (m.plan_snapshot || "") !== planSnapshot(req.params.id),
+  });
+});
+
+// Supervisor presses "Update queue". Only bumps the version — and so only
+// alerts operators — when the top of the queue genuinely differs from what
+// was last published.
+router.post("/:id/plan/publish", (req, res) => {
+  const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(req.params.id);
+  if (!machine) return res.status(404).json({ error: "Machine not found" });
+
+  const snapshot = planSnapshot(req.params.id);
+  // A machine that has never published has no baseline to compare against,
+  // so the first press just records one. Without this, the very first
+  // publish always "changes" (from empty) and fires a spurious alert on
+  // the floor before any supervisor has actually edited anything.
+  const isFirstPublish = machine.plan_snapshot == null;
+  const changed = !isFirstPublish && machine.plan_snapshot !== snapshot;
+  const now = new Date().toISOString();
+
+  if (changed) {
+    db.prepare("UPDATE machines SET plan_version = plan_version + 1, plan_changed_at = ?, plan_snapshot = ? WHERE id = ?")
+      .run(now, snapshot, req.params.id);
+  } else if (isFirstPublish) {
+    db.prepare("UPDATE machines SET plan_snapshot = ? WHERE id = ?").run(snapshot, req.params.id);
+  }
+
+  const after = db.prepare("SELECT plan_version, plan_changed_at FROM machines WHERE id = ?").get(req.params.id);
+  res.json({
+    published: true,
+    changed,
+    planVersion: after.plan_version,
+    planChangedAt: after.plan_changed_at,
+    message: changed
+      ? "Operators will be told the plan changed."
+      : isFirstPublish
+        ? "Baseline recorded. Future changes to the top of the queue will alert operators."
+        : "Nothing in the top of the queue changed — no alert sent.",
+  });
+});
+
 // ---- Screens (the tables a machine shows in the operator app) ----
 
 router.get("/:id/screens", (req, res) => {

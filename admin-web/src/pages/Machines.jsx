@@ -892,6 +892,57 @@ function WorkOrderRow({ machine, wo, isFirst, isLast, onChanged, onMoveUp, onMov
   );
 }
 
+// "Update queue" — tells the operators on the floor that the plan changed.
+// Deliberately a manual button rather than firing on every edit: a
+// supervisor reshuffling the list makes many small changes, and each one
+// interrupting the floor would train operators to ignore the alert.
+function PublishPlan({ machine, queue }) {
+  const [status, setStatus] = useState(null);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  // The queue prop is passed in purely so this re-checks whenever the
+  // supervisor edits something, keeping the "unpublished changes" hint live.
+  useEffect(() => {
+    let cancelled = false;
+    api.machines.plan.get(machine.id)
+      .then((s) => { if (!cancelled) setStatus(s); })
+      .catch(() => { if (!cancelled) setStatus(null); });
+    return () => { cancelled = true; };
+  }, [machine.id, queue]);
+
+  async function publish() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.machines.plan.publish(machine.id);
+      setResult(r);
+      setStatus(await api.machines.plan.get(machine.id));
+    } catch (err) {
+      setResult({ message: err.message, error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const pending = status?.hasUnpublishedChanges;
+  return (
+    <div className="publish-plan">
+      <button className={`btn ${pending ? "" : "secondary"}`} onClick={publish} disabled={busy}>
+        {busy ? "Updating…" : "Update queue"}
+      </button>
+      <div className="publish-plan-note">
+        {pending
+          ? <span className="publish-pending">Changes to the top {10} jobs haven't been sent to the operators yet.</span>
+          : <span className="hint">Operators are seeing the current plan.</span>}
+        {result && (
+          <div className={result.error ? "error-text" : "hint"} style={{ marginTop: 2 }}>{result.message}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WorkOrderQueue({ machine }) {
   const [workOrders, setWorkOrders] = useState([]);
   const [error, setError] = useState("");
@@ -925,6 +976,7 @@ function WorkOrderQueue({ machine }) {
   return (
     <div style={{ marginBottom: 20 }}>
       <div className="section-title">Work order queue</div>
+      <PublishPlan machine={machine} queue={queue} />
       <div className="hint" style={{ marginBottom: 10 }}>
         Planned by a supervisor, in priority order. The operator app shows this exact list — they pick a job from
         here to start it; it can't be started any other way.

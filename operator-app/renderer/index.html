@@ -26,7 +26,7 @@
     <!-- Fatal config error (e.g. config.json missing on a freshly set-up PC) -->
     <section id="screen-error" class="screen hidden">
       <div class="center-box">
-        <h1>Setup needed</h1>
+        <h1 data-i18n="setupNeeded">Setup needed</h1>
         <p id="error-message" class="error-text"></p>
         <p class="hint">Ask an admin to give you this machine's API key from the Machines page,
            then put it in config.json next to the app.</p>
@@ -37,11 +37,11 @@
     <section id="screen-login" class="screen hidden">
       <div class="center-box">
         <div class="machine-label" id="login-machine-name">—</div>
-        <h1>Enter your ID number</h1>
+        <h1 data-i18n="enterId">Enter your ID number</h1>
         <input id="login-input" class="big-input" type="text" inputmode="numeric" placeholder="e.g. 1001" autofocus />
         <div id="login-error" class="error-text"></div>
         <div class="keypad" id="keypad"></div>
-        <button class="btn huge" id="login-submit">Continue</button>
+        <button class="btn huge" id="login-submit" data-i18n="continue">Continue</button>
       </div>
     </section>
 
@@ -50,17 +50,26 @@
       <div class="topline">
         <div>
           <div class="machine-label" id="home-machine-name">—</div>
-          <div class="operator-label">Operator: <strong id="home-operator-name">—</strong></div>
+          <div class="operator-label"><span data-i18n="operatorLabel">Operator</span>: <strong id="home-operator-name">—</strong></div>
         </div>
-        <button class="btn secondary" id="logout-btn">Switch operator</button>
+        <button class="btn secondary" id="logout-btn" data-i18n="shiftFinish">Shift finish</button>
       </div>
 
       <div class="queue-tabs">
-        <button class="tab-btn active" id="queue-tab-pending" data-tab="pending">Queue</button>
-        <button class="tab-btn" id="queue-tab-finished" data-tab="finished">Finished</button>
+        <button class="tab-btn active" id="queue-tab-pending" data-tab="pending" data-i18n="queue">Queue</button>
+        <button class="tab-btn" id="queue-tab-finished" data-tab="finished" data-i18n="finished">Finished</button>
         <button class="btn secondary refresh-btn" id="queue-refresh-btn" title="Refresh">
-          <span class="refresh-icon">↻</span> Refresh
+          <span class="refresh-icon">↻</span> <span data-i18n="refresh">Refresh</span>
         </button>
+      </div>
+
+      <div id="plan-alert" class="plan-alert hidden">
+        <div class="plan-alert-text">
+          <strong data-i18n="planChangeTitle">Please Check – Plan Change</strong>
+          <span data-i18n="planChangeBody">Your supervisor changed the job plan. Refresh the list before starting anything.</span>
+        </div>
+        <button class="btn" id="plan-alert-refresh" data-i18n="refreshNow">Refresh now</button>
+        <button class="btn secondary" id="plan-alert-dismiss" data-i18n="dismiss">Dismiss</button>
       </div>
 
       <div id="queue-list-pending" class="queue-list"></div>
@@ -71,13 +80,20 @@
     <section id="screen-start-form" class="screen hidden">
       <div class="topline">
         <div class="machine-label" id="form-machine-name">—</div>
-        <button class="btn secondary" id="form-cancel-btn">Cancel</button>
+        <button class="btn secondary" id="form-cancel-btn" data-i18n="cancel">Cancel</button>
       </div>
       <div class="form-box">
-        <h1>Are you sure you want to start this work order?</h1>
+        <h1 data-i18n="confirmStart">Are you sure you want to start this work order?</h1>
         <div id="form-wo-context" class="wo-context"></div>
         <div id="form-error" class="error-text"></div>
-        <button class="btn huge start" id="form-submit-btn">▶ Start</button>
+        <div class="start-choice">
+          <button class="btn huge start" id="form-submit-btn">▶ Start work</button>
+          <button class="btn huge setup" id="form-setup-btn">🔧 Start setup</button>
+        </div>
+        <div class="hint start-hint">
+          Choose <strong>Start setup</strong> if you need to set the machine up first — that time is recorded
+          separately, and you press <strong>Start work</strong> when production actually begins.
+        </div>
       </div>
     </section>
 
@@ -89,7 +105,7 @@
           <div class="machine-label" id="run-machine-name">—</div>
           <div class="operator-label" id="run-operator-name">—</div>
         </div>
-        <button class="btn secondary" id="view-queue-btn">Work order list</button>
+        <button class="btn secondary" id="view-queue-btn" data-i18n="workOrderList">Work order list</button>
       </div>
 
       <div class="run-header">
@@ -98,6 +114,7 @@
         <div id="run-wo-context" class="wo-context"></div>
         <div id="run-hour-summary" class="row mono-data"></div>
         <div class="run-actions">
+          <button class="btn huge start hidden" id="begin-work-btn">▶ Start work</button>
           <button class="btn huge pause" id="pause-btn"><span class="pause-icon"></span> Pause</button>
           <button class="btn huge resume hidden" id="resume-btn">▶ Resume</button>
           <button class="btn huge stop" id="stop-btn">■ Stop</button>
@@ -114,6 +131,28 @@
          operator can see what's queued next while their current job runs,
          but nothing here is tappable to start — only one job runs at a
          time on this machine. -->
+    <!-- End-of-shift scrap form, shown when the operator presses Shift
+         finish. Signing out only happens after this is submitted. -->
+    <section id="screen-shift-finish" class="screen hidden">
+      <div class="topline">
+        <div class="machine-label" id="shift-machine-name">—</div>
+        <button class="btn secondary" id="shift-cancel-btn" data-i18n="cancel">Cancel</button>
+      </div>
+      <div class="form-box">
+        <h1 data-i18n="shiftFinishTitle">Finish shift</h1>
+        <div class="hint" data-i18n="scrapHint">Record any scrap from your shift before signing out.</div>
+
+        <div class="table-section-header" style="margin-top:18px">
+          <div class="section-title" data-i18n="scrap">Scrap</div>
+          <button class="btn secondary" id="scrap-add-row-btn" data-i18n="addRow">+ Add row</button>
+        </div>
+        <div class="table-scroll"><table id="scrap-table" class="row-table"></table></div>
+
+        <div id="shift-finish-error" class="error-text"></div>
+        <button class="btn huge stop" id="shift-confirm-btn" data-i18n="signOut">Sign out</button>
+      </div>
+    </section>
+
     <section id="screen-queue-view" class="screen hidden">
       <div class="topline">
         <button class="btn secondary" id="queue-view-back-btn">‹ Back</button>
@@ -126,10 +165,10 @@
     <section id="screen-pause-form" class="screen hidden">
       <div class="topline">
         <div class="machine-label" id="pause-form-machine-name">—</div>
-        <button class="btn secondary" id="pause-form-cancel-btn">Cancel</button>
+        <button class="btn secondary" id="pause-form-cancel-btn" data-i18n="cancel">Cancel</button>
       </div>
       <div class="form-box">
-        <h1>Why are you pausing?</h1>
+        <h1 data-i18n="whyPausing">Why are you pausing?</h1>
         <div id="pause-reason-list" class="code-entry"></div>
         <div id="pause-form-error" class="error-text"></div>
       </div>
@@ -139,19 +178,19 @@
     <section id="screen-stop-form" class="screen hidden">
       <div class="topline">
         <div class="machine-label" id="stop-form-machine-name">—</div>
-        <button class="btn secondary" id="stop-form-cancel-btn">Cancel</button>
+        <button class="btn secondary" id="stop-form-cancel-btn" data-i18n="cancel">Cancel</button>
       </div>
       <div class="form-box">
-        <h1 id="stop-form-title">Job finished?</h1>
+        <h1 id="stop-form-title" data-i18n="jobFinished">Job finished?</h1>
 
         <div class="stop-choice" id="stop-choice-row">
           <button class="btn huge start" id="stop-finished-btn">✓ Finished</button>
-          <button class="btn huge secondary" id="stop-incomplete-btn">Incomplete / Cancelled</button>
+          <button class="btn huge secondary" id="stop-incomplete-btn" data-i18n="incomplete">Incomplete / Cancelled</button>
         </div>
         <div id="stop-choice-error" class="error-text"></div>
 
         <div id="stop-reason-section" class="hidden">
-          <div class="section-title">Reason</div>
+          <div class="section-title" data-i18n="reason">Reason</div>
           <div id="stop-reason-list" class="code-entry"></div>
         </div>
 
@@ -161,6 +200,7 @@
 
   </div>
 
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

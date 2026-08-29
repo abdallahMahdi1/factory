@@ -1,5 +1,7 @@
 const express = require("express");
+const { v4: uuid } = require("uuid");
 const db = require("../lib/db");
+const { shiftFor, getSettings } = require("../lib/shift");
 const { requireDevice } = require("../middleware/auth");
 
 const router = express.Router();
@@ -125,6 +127,30 @@ router.get("/config", (req, res) => {
       pending: workOrdersPending.map(toWorkOrderJson),
       finished: workOrdersFinished.map(toWorkOrderJson),
     },
+    // The operator may only start one of the first few jobs — the rest of
+    // the queue is visible for planning ahead, not for picking from.
+    selectableCount: 5,
+    // Compared against the version the app last acknowledged, to decide
+    // whether to raise the "Please Check - Plan Change" alert.
+    // Shift boundaries and timezone, so the app can label the current
+    // shift without needing its own clock configuration.
+    // Materials the operator can pick from on the end-of-shift scrap form.
+    // Comes from the "Scrap Materials" master list if the admin made one,
+    // otherwise falls back to "Materials" so the form is usable out of the
+    // box rather than showing an empty dropdown.
+    scrapMaterials: (() => {
+      const list =
+        db.prepare("SELECT id FROM option_lists WHERE name = 'Scrap Materials'").get() ||
+        db.prepare("SELECT id FROM option_lists WHERE name = 'Materials'").get();
+      if (!list) return [];
+      return db
+        .prepare("SELECT id, value FROM option_items WHERE option_list_id = ? AND active = 1 ORDER BY value ASC")
+        .all(list.id);
+    })(),
+    shiftSettings: getSettings(),
+    currentShift: shiftFor(new Date()),
+    planVersion: machine.plan_version || 0,
+    planChangedAt: machine.plan_changed_at || null,
   });
 });
 
@@ -158,16 +184,77 @@ router.post("/sync", (req, res) => {
     try {
       switch (type) {
         case "start": {
-          const { sessionId, operatorId, startedAt, workOrderId, runningHourStart } = payload;
+          const { sessionId, operatorId, startedAt, workOrderId, runningHourStart, phase } = payload;
+          // phase "setup" means the operator is setting the machine up,
+          // not producing yet: work_started_at stays NULL until they press
+          // "Start work". Starting straight into production sets
+          // work_started_at = startedAt, i.e. zero setup time.
+          const isSetup = phase === "setup";
           db.prepare(
             `INSERT OR IGNORE INTO sessions
-               (id, machine_id, operator_id, work_order_id, field_values, stop_field_values, running_hour_start, started_at, status, created_offline)
-             VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, 'running', ?)`
-          ).run(sessionId, req.machine.id, operatorId, workOrderId || null, runningHourStart ?? null, startedAt, event.createdOffline ? 1 : 0);
+               (id, machine_id, operator_id, work_order_id, field_values, stop_field_values, running_hour_start, started_at, work_started_at, status, created_offline)
+             VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?)`
+          ).run(
+            sessionId, req.machine.id, operatorId, workOrderId || null, runningHourStart ?? null,
+            startedAt, isSetup ? null : startedAt, isSetup ? "setup" : "running",
+            event.createdOffline ? 1 : 0
+          );
+          // Resolved once, at record time, so historic sessions keep the
+          // shift they actually ran in even if the boundaries change later.
+          db.prepare("UPDATE sessions SET shift = ? WHERE id = ? AND shift IS NULL")
+            .run(shiftFor(startedAt), sessionId);
           if (workOrderId) {
             db.prepare(
               "UPDATE work_orders SET status = 'in_progress', session_id = ?, started_at = ? WHERE id = ? AND machine_id = ?"
             ).run(sessionId, startedAt, workOrderId, req.machine.id);
+          }
+          break;
+        }
+        // Setup finished — production starts now. Everything before this
+        // point is setup time, everything after is working time.
+        case "begin_work": {
+          const { sessionId, workStartedAt } = payload;
+          db.prepare(
+            "UPDATE sessions SET work_started_at = ?, status = 'running' WHERE id = ? AND work_started_at IS NULL"
+          ).run(workStartedAt, sessionId);
+          break;
+        }
+        // Operator signed in at this machine's app.
+        case "sign_in": {
+          const { attendanceId, operatorId, signedInAt } = payload;
+          db.prepare(
+            `INSERT OR IGNORE INTO operator_attendance
+               (id, operator_id, machine_id, signed_in_at, shift)
+             VALUES (?, ?, ?, ?, ?)`
+          ).run(attendanceId, operatorId, req.machine.id, signedInAt, shiftFor(signedInAt));
+          break;
+        }
+        case "sign_out": {
+          const { attendanceId, signedOutAt, scrap } = payload;
+          db.prepare(
+            "UPDATE operator_attendance SET signed_out_at = ? WHERE id = ? AND signed_out_at IS NULL"
+          ).run(signedOutAt, attendanceId);
+
+          // Scrap weighed at end of shift. Replaced rather than appended so
+          // a retried sign-out event can't double-count the same scrap.
+          if (Array.isArray(scrap)) {
+            db.prepare("DELETE FROM shift_scrap WHERE attendance_id = ?").run(attendanceId);
+            const insert = db.prepare(
+              "INSERT INTO shift_scrap (id, attendance_id, material_id, material_label, kg) VALUES (?, ?, ?, ?, ?)"
+            );
+            for (const row of scrap) {
+              const kg = Number(row?.kg);
+              if (!row || !isFinite(kg) || kg <= 0) continue; // skip blank/invalid lines
+              // Resolve the label now: if the admin later renames or
+              // removes the material, this record still reads correctly.
+              const item = row.materialId
+                ? db.prepare("SELECT value FROM option_items WHERE id = ?").get(row.materialId)
+                : null;
+              insert.run(
+                uuid(), attendanceId, row.materialId || null,
+                item?.value || row.materialLabel || "(unspecified)", kg
+              );
+            }
           }
           break;
         }

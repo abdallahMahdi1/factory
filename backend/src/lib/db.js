@@ -44,6 +44,13 @@ addColumnIfMissing("work_orders", "total_tolerance TEXT");
 // Per-screen row storage, keyed by screen name. Sessions predating custom
 // screens keep their field_values/stop_field_values and read back fine.
 addColumnIfMissing("sessions", "table_rows TEXT NOT NULL DEFAULT '{}'");
+// Setup phase: NULL work_started_at means the job is still being set up.
+addColumnIfMissing("sessions", "work_started_at TEXT");
+addColumnIfMissing("sessions", "shift TEXT");
+// Published-plan tracking, used to alert operators to queue changes.
+addColumnIfMissing("machines", "plan_version INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("machines", "plan_changed_at TEXT");
+addColumnIfMissing("machines", "plan_snapshot TEXT");
 
 // Older databases created machine_fields with CHECK (stage IN
 // ('start','stop')), which would reject any custom screen. SQLite can't

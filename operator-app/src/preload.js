@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("api", {
   getState: () => ipcRenderer.invoke("get-state"),
   loginOperator: (idNumber) => ipcRenderer.invoke("login-operator", idNumber),
   startSession: (payload) => ipcRenderer.invoke("start-session", payload),
+  logoutOperator: (payload) => ipcRenderer.invoke("logout-operator", payload),
+  beginWork: () => ipcRenderer.invoke("begin-work"),
   updateRows: (payload) => ipcRenderer.invoke("update-rows", payload),
   pauseSession: (payload) => ipcRenderer.invoke("pause-session", payload),
   resumeSession: () => ipcRenderer.invoke("resume-session"),

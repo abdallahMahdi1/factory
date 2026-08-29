@@ -41,6 +41,9 @@ function loadDeviceConfig() {
 let sessionManager;
 let win;
 let syncTimer;
+// Module-scoped so IPC handlers can read it too (the language setting is
+// needed by get-state, which runs long after startup).
+let deviceConfig;
 
 const SYNC_INTERVAL_MS = 15000; // matches the 20-minute offline-alert threshold with plenty of margin
 
@@ -72,7 +75,6 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  let deviceConfig;
   try {
     deviceConfig = loadDeviceConfig();
   } catch (err) {
@@ -128,6 +130,10 @@ app.on("window-all-closed", () => {
 // one place the offline/sync rules live.
 
 ipcMain.handle("get-state", () => ({
+  // Which language this machine's screen is in. Set once per PC in
+  // config.json when the machine is installed, so operators never have to
+  // pick it and it can't get changed by accident mid-shift.
+  language: deviceConfig?.language || "en",
   config: sessionManager.getConfig(),
   activeSession: sessionManager.getActiveSession(),
   status: sessionManager.getStatus(),
@@ -137,11 +143,28 @@ ipcMain.handle("get-state", () => ({
 ipcMain.handle("login-operator", (event, idNumber) => {
   const operator = sessionManager.findOperatorByIdNumber(idNumber);
   if (!operator) throw new Error("That ID isn't authorized on this machine.");
+  // Signing in on the machine IS the attendance record — the supervisor
+  // sees when someone actually arrived at their machine, not when a
+  // separate clock-in terminal was touched.
+  sessionManager.signIn(operator);
+  sessionManager.runSyncCycle().then(broadcastStatus);
   return operator;
 });
 
-ipcMain.handle("start-session", (event, { operatorId, operatorName, workOrder, runningHourStart }) => {
-  const session = sessionManager.startSession({ operatorId, operatorName, workOrder, runningHourStart });
+ipcMain.handle("logout-operator", (event, payload) => {
+  const result = sessionManager.signOut(payload || {});
+  sessionManager.runSyncCycle().then(broadcastStatus);
+  return result;
+});
+
+ipcMain.handle("start-session", (event, { operatorId, operatorName, workOrder, runningHourStart, phase }) => {
+  const session = sessionManager.startSession({ operatorId, operatorName, workOrder, runningHourStart, phase });
+  sessionManager.runSyncCycle().then(broadcastStatus);
+  return session;
+});
+
+ipcMain.handle("begin-work", () => {
+  const session = sessionManager.beginWork();
   sessionManager.runSyncCycle().then(broadcastStatus);
   return session;
 });

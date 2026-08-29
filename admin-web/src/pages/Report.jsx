@@ -20,7 +20,7 @@ function todayLocalISO() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-const KIND_LABEL = { work: "Running", pause: "Paused", idle: "Not running" };
+const KIND_LABEL = { work: "Running", setup: "Under setup", pause: "Paused", idle: "Not running" };
 
 export default function Report() {
   const [machines, setMachines] = useState([]);
@@ -131,6 +131,10 @@ export default function Report() {
               <div className="report-total">
                 <div className="rt-value" style={{ color: "var(--green)" }}>{fmtDuration(report.totals.workMinutes)}</div>
                 <div className="rt-label">Running</div>
+              </div>
+              <div className="report-total">
+                <div className="rt-value" style={{ color: "var(--accent)" }}>{fmtDuration(report.totals.setupMinutes || 0)}</div>
+                <div className="rt-label">Under setup</div>
               </div>
               <div className="report-total">
                 <div className="rt-value" style={{ color: "var(--amber)" }}>{fmtDuration(report.totals.pauseMinutes)}</div>

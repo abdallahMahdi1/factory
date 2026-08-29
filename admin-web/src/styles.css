@@ -310,3 +310,23 @@ tr:hover td { background: #fafbfa; }
 }
 .screen-chip-label { font-weight: 700; font-size: 13.5px; }
 .screen-chip-count { font-size: 11.5px; color: var(--muted); margin-right: 4px; }
+
+/* ---------- Publish plan ---------- */
+.publish-plan { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.publish-plan-note { font-size: 12.5px; }
+.publish-pending { color: var(--amber); font-weight: 600; }
+
+/* Setup gets its own colour in the timeline and day bar — it's neither
+   productive time nor lost time, and lumping it into either would hide
+   exactly the number a supervisor wants to see. */
+.state-pill.setup { background: var(--accent-bg, #e7effa); color: var(--accent); }
+.day-bar-seg.setup { background: var(--accent); }
+
+/* "Under setup" — deliberately a different hue from both the green of
+   running and the amber of paused, so a supervisor scanning the floor
+   board can tell the three apart at a glance. */
+.badge.blue { background: #e7effa; color: #2f6fb5; }
+.status-dot.blue { background: #2f6fb5; }
+.timeline-row.setup .timeline-label { color: #2f6fb5; }
+.timeline-dot.setup { background: #2f6fb5; }
+.scrap-cell { min-width: 150px; font-size: 12.5px; line-height: 1.4; }

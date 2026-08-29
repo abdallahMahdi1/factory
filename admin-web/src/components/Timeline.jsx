@@ -29,7 +29,9 @@ export default function Timeline({ segments, pauseReasonLookup = {}, compact = f
         const label =
           seg.type === "work"
             ? "Working"
-            : `Paused${seg.reasonId && pauseReasonLookup[seg.reasonId] ? ` — ${pauseReasonLookup[seg.reasonId]}` : ""}`;
+            : seg.type === "setup"
+              ? "Under setup"
+              : `Paused${seg.reasonId && pauseReasonLookup[seg.reasonId] ? ` — ${pauseReasonLookup[seg.reasonId]}` : ""}`;
         return (
           <div className={`timeline-row ${seg.type} ${isOpen ? "open" : ""}`} key={i}>
             <span className={`timeline-dot ${seg.type}`} />

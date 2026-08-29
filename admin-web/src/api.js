@@ -61,6 +61,11 @@ export const api = {
     // admin UI, so a 30-field machine doesn't need 30 separate requests.
     setFields: (id, fields) => request(`/machines/${id}/fields`, { method: "PUT", body: { fields } }),
 
+    plan: {
+      get: (machineId) => request(`/machines/${machineId}/plan`),
+      publish: (machineId) => request(`/machines/${machineId}/plan/publish`, { method: "POST" }),
+    },
+
     screens: {
       list: (machineId) => request(`/machines/${machineId}/screens`),
       create: (machineId, label) => request(`/machines/${machineId}/screens`, { method: "POST", body: { label } }),
@@ -140,6 +145,20 @@ export const api = {
       a.remove();
       URL.revokeObjectURL(url);
     },
+  },
+
+  attendance: {
+    list: (params = {}) => {
+      const qs = new URLSearchParams(
+        Object.entries(params).filter(([, v]) => v !== "" && v != null)
+      ).toString();
+      return request(`/attendance${qs ? `?${qs}` : ""}`);
+    },
+  },
+
+  settings: {
+    get: () => request("/settings"),
+    update: (data) => request("/settings", { method: "PUT", body: data }),
   },
 
   dashboard: {

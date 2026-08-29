@@ -34,6 +34,20 @@ function timelineFor(machineId) {
   // rather than trusting any pre-aggregated duration.
   const segments = [];
   let cursor = session.started_at;
+
+  // Setup comes first, as its own segment — otherwise a machine being set
+  // up reads as "Working" on the floor board, which is exactly the
+  // distinction the setup timer exists to make.
+  if (session.work_started_at && session.work_started_at > cursor) {
+    segments.push({ type: "setup", from: cursor, to: session.work_started_at });
+    cursor = session.work_started_at;
+  } else if (!session.work_started_at) {
+    // Still in setup: one open segment covering the whole session so far.
+    segments.push({ type: "setup", from: cursor, to: session.ended_at || null });
+    cursor = session.ended_at || cursor;
+    if (!session.ended_at) return { sessionId: session.id, operatorName: session.operator_name, status: session.status, startedAt: session.started_at, endedAt: session.ended_at, segments };
+  }
+
   for (const p of pauses) {
     if (p.started_at > cursor) segments.push({ type: "work", from: cursor, to: p.started_at });
     segments.push({ type: "pause", from: p.started_at, to: p.ended_at, reasonId: p.reason_id });
@@ -90,6 +104,14 @@ router.get("/status", (req, res) => {
             operatorName: openSession.operator_name,
             status: openSession.status,
             startedAt: openSession.started_at,
+            // NULL work_started_at means the machine is still being set
+            // up, which the dashboard shows as its own state rather than
+            // lumping it in with "running".
+            workStartedAt: openSession.work_started_at || null,
+            inSetup: !openSession.work_started_at,
+            setupMinutes: openSession.work_started_at
+              ? Math.round(((new Date(openSession.work_started_at) - new Date(openSession.started_at)) / 60000) * 10) / 10
+              : Math.round(((now - new Date(openSession.started_at)) / 60000) * 10) / 10,
             runningHours: runningHours ? Math.round(runningHours * 10) / 10 : null,
             // Rows (not a single flat set of values) since a session's
             // Start table can now have more than one row — the dashboard
@@ -194,9 +216,24 @@ router.get("/daily-report", (req, res) => {
     const jobLabel = s.work_order_job_no || "(no work order)";
     const stopReason = s.stop_reason_id ? stopReasonById[s.stop_reason_id] : null;
 
-    // Walk the session start→end, emitting a "work" segment for each
-    // stretch between pauses, and a "pause" segment for each pause.
+    // Setup comes first: everything from the session's start until the
+    // operator pressed "Start work" is setup, not production. Emitting it
+    // as its own segment is what lets the report say "setup 10 min,
+    // working 15 min" instead of showing 25 minutes of undifferentiated
+    // run time.
     let cursor = sStart;
+    const workStart = s.work_started_at ? new Date(s.work_started_at) : null;
+    if (workStart && workStart > cursor) {
+      segments.push({ kind: "setup", from: cursor, to: workStart, session: s, jobLabel, stopReason });
+      cursor = workStart;
+    } else if (!workStart && !s.ended_at) {
+      // Still in setup right now — the whole open stretch is setup time.
+      segments.push({ kind: "setup", from: cursor, to: sEnd, session: s, jobLabel, stopReason });
+      cursor = sEnd;
+    }
+
+    // Then the rest: a "work" segment for each stretch between pauses, and
+    // a "pause" segment for each pause.
     for (const p of pauses) {
       const pStart = new Date(p.started_at);
       const pEnd = p.ended_at ? new Date(p.ended_at) : sEnd;
@@ -259,10 +296,11 @@ router.get("/daily-report", (req, res) => {
   const totals = emptyTotals();
   for (const r of rows) {
     if (r.kind === "work") totals.workMinutes += r.minutes;
+    else if (r.kind === "setup") totals.setupMinutes += r.minutes;
     else if (r.kind === "pause") totals.pauseMinutes += r.minutes;
     else totals.idleMinutes += r.minutes;
   }
-  totals.totalMinutes = totals.workMinutes + totals.pauseMinutes + totals.idleMinutes;
+  totals.totalMinutes = totals.workMinutes + totals.setupMinutes + totals.pauseMinutes + totals.idleMinutes;
   totals.utilizationPercent = totals.totalMinutes > 0
     ? Math.round((totals.workMinutes / totals.totalMinutes) * 1000) / 10
     : 0;
@@ -282,7 +320,7 @@ router.get("/daily-report", (req, res) => {
 });
 
 function emptyTotals() {
-  return { workMinutes: 0, pauseMinutes: 0, idleMinutes: 0, totalMinutes: 0, utilizationPercent: 0 };
+  return { workMinutes: 0, setupMinutes: 0, pauseMinutes: 0, idleMinutes: 0, totalMinutes: 0, utilizationPercent: 0 };
 }
 function minutesBetween(a, b) {
   return Math.round(((b - a) / 60000) * 10) / 10;

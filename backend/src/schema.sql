@@ -9,6 +9,47 @@ CREATE TABLE IF NOT EXISTS admins (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Global, system-wide settings. Single row (id = 1) rather than a
+-- key/value table: there are only a handful of settings, they're always
+-- read together, and one row means no risk of a half-configured system.
+CREATE TABLE IF NOT EXISTS settings (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  -- IANA zone, e.g. "Asia/Riyadh". Everything the operator and supervisor
+  -- see (shift boundaries, report days, clock times) is computed in this
+  -- zone rather than the server's, which on a cloud host is usually UTC.
+  timezone           TEXT NOT NULL DEFAULT 'Asia/Riyadh',
+  -- Local clock times, "HH:MM". A session belongs to the day shift if it
+  -- started at/after day_shift_start and before night_shift_start.
+  day_shift_start    TEXT NOT NULL DEFAULT '06:00',
+  night_shift_start  TEXT NOT NULL DEFAULT '18:00',
+  updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO settings (id) VALUES (1);
+
+-- Every operator sign-in and sign-out on a machine, so a supervisor can
+-- see who was at which machine and whether they arrived and left on time.
+CREATE TABLE IF NOT EXISTS operator_attendance (
+  id           TEXT PRIMARY KEY,
+  operator_id  TEXT NOT NULL REFERENCES operators(id) ON DELETE CASCADE,
+  machine_id   TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+  signed_in_at  TEXT NOT NULL,
+  signed_out_at TEXT,
+  shift        TEXT,   -- 'day' | 'night', resolved from signed_in_at
+  synced_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Scrap recorded by an operator when finishing their shift. Tied to the
+-- attendance row rather than to a session, because scrap is weighed at
+-- end of shift across whatever was run, not per individual job.
+CREATE TABLE IF NOT EXISTS shift_scrap (
+  id             TEXT PRIMARY KEY,
+  attendance_id  TEXT NOT NULL REFERENCES operator_attendance(id) ON DELETE CASCADE,
+  material_id    TEXT,          -- option_items.id when picked from the list
+  material_label TEXT NOT NULL, -- resolved label, kept so history survives list edits
+  kg             REAL NOT NULL,
+  recorded_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS machines (
   id                 TEXT PRIMARY KEY,
   name               TEXT UNIQUE NOT NULL,
@@ -16,6 +57,16 @@ CREATE TABLE IF NOT EXISTS machines (
   api_key            TEXT UNIQUE NOT NULL,
   last_heartbeat_at  TEXT,
   last_synced_at     TEXT,
+  -- Bumped when a supervisor publishes a queue change that actually
+  -- affects the top of the list. The operator app compares this against
+  -- the version it last acknowledged to decide whether to show the
+  -- "Please Check - Plan Change" alert.
+  plan_version       INTEGER NOT NULL DEFAULT 0,
+  plan_changed_at    TEXT,
+  -- Snapshot of the top work orders at the moment of the last publish, so
+  -- the next publish can tell whether anything meaningful actually changed
+  -- rather than alerting operators every time the button is pressed.
+  plan_snapshot      TEXT,
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -156,8 +207,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   running_hour_start   REAL,
   running_hour_end     REAL,
   started_at           TEXT NOT NULL,
+  -- When the operator moved from setup into actual production. NULL means
+  -- the job is still in setup. Setup time is (work_started_at -
+  -- started_at); working time runs from work_started_at onward. A job
+  -- started directly with "Start" sets this equal to started_at, so it has
+  -- zero setup and every session is measured the same way.
+  work_started_at      TEXT,
+  -- 'day' or 'night', resolved from started_at in the configured timezone
+  -- at the moment the session is recorded. Stored rather than computed on
+  -- read so historic records keep the shift they actually ran in, even if
+  -- the shift boundaries are changed later.
+  shift                TEXT,
   ended_at             TEXT,
-  status               TEXT NOT NULL DEFAULT 'running', -- running | paused | finished | incomplete
+  status               TEXT NOT NULL DEFAULT 'running', -- setup | running | paused | finished | incomplete
   stop_reason_id       TEXT REFERENCES stop_reasons(id),
   completion_note      TEXT,
   created_offline      INTEGER NOT NULL DEFAULT 0,

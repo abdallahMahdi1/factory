@@ -52,7 +52,43 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     return cfg.operators.find((o) => String(o.id_number) === String(idNumber)) || null;
   }
 
-  function startSession({ operatorId, operatorName, workOrder, runningHourStart }) {
+  // ---- Attendance: who is signed in at this machine ----
+  // Recorded as queued events like everything else, so a shift that starts
+  // while the network is down still turns up in the admin panel later.
+
+  function signIn(operator) {
+    const attendanceId = randomUUID();
+    const signedInAt = nowIso();
+    localDb.setKV("attendance", { attendanceId, operatorId: operator.id, operatorName: operator.name, signedInAt });
+    localDb.enqueueEvent({
+      eventId: `${attendanceId}-in`,
+      type: "sign_in",
+      payload: { attendanceId, operatorId: operator.id, signedInAt },
+    });
+    return { attendanceId, signedInAt };
+  }
+
+  function signOut({ scrap } = {}) {
+    const att = localDb.getKV("attendance", null);
+    if (!att) return null;
+    const signedOutAt = nowIso();
+    localDb.enqueueEvent({
+      eventId: `${att.attendanceId}-out`,
+      type: "sign_out",
+      // Scrap is weighed at end of shift, so it rides along with the
+      // sign-out rather than being a separate event that could arrive
+      // without its attendance record.
+      payload: { attendanceId: att.attendanceId, signedOutAt, scrap: scrap || [] },
+    });
+    localDb.setKV("attendance", null);
+    return { attendanceId: att.attendanceId, signedOutAt };
+  }
+
+  function getAttendance() {
+    return localDb.getKV("attendance", null);
+  }
+
+  function startSession({ operatorId, operatorName, workOrder, runningHourStart, phase }) {
     if (getActiveSession()) throw new Error("A job is already running on this machine.");
     if (!workOrder || !workOrder.id) throw new Error("A work order must be selected to start a job.");
     const sessionId = randomUUID();
@@ -81,13 +117,17 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
       // A machine defines its own screens, so this can't be two fixed
       // arrays any more.
       screenRows: {},
+      // "setup" until the operator presses Start work; everything before
+      // that point is counted as setup time rather than production.
+      phase: phase === "setup" ? "setup" : "running",
+      workStartedAt: phase === "setup" ? null : startedAt,
     };
     localDb.setKV("active_session", session);
     localDb.enqueueEvent({
       eventId: `${sessionId}-start`,
       type: "start",
       createdOffline: !online,
-      payload: { sessionId, operatorId, startedAt, workOrderId: workOrder.id, runningHourStart: runningHourStart ?? null },
+      payload: { sessionId, operatorId, startedAt, workOrderId: workOrder.id, runningHourStart: runningHourStart ?? null, phase: phase === "setup" ? "setup" : "running" },
     });
     return session;
   }
@@ -108,6 +148,24 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
       eventId: randomUUID(),
       type: "update_rows",
       payload: { sessionId: session.id, table, rows },
+    });
+    return session;
+  }
+
+  // Setup is finished; production starts now. Queued like every other
+  // event so it survives being offline.
+  function beginWork() {
+    const session = getActiveSession();
+    if (!session) throw new Error("No active job.");
+    if (session.phase !== "setup") return session; // already producing
+    const workStartedAt = nowIso();
+    session.phase = "running";
+    session.workStartedAt = workStartedAt;
+    localDb.setKV("active_session", session);
+    localDb.enqueueEvent({
+      eventId: `${session.id}-begin-work`,
+      type: "begin_work",
+      payload: { sessionId: session.id, workStartedAt },
     });
     return session;
   }
@@ -255,7 +313,11 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
     getActiveSession,
     refreshConfig,
     findOperatorByIdNumber,
+    signIn,
+    signOut,
+    getAttendance,
     startSession,
+    beginWork,
     updateRows,
     pauseSession,
     resumeSession,

@@ -376,3 +376,69 @@ h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
 }
 .reason-option-label { flex: 1; }
 .reason-empty { color: var(--muted); font-size: 14px; padding: 24px 0; text-align: center; }
+
+/* ---------- Start / Setup choice ---------- */
+.start-choice { display: flex; gap: 14px; flex-wrap: wrap; }
+.btn.setup { background: #4a5568; }
+.btn.setup:hover { background: #5a6478; }
+.start-hint { max-width: 560px; margin-top: 12px; text-align: left; color: var(--muted); font-size: 13px; }
+
+/* ---------- Plan change alert ---------- */
+/* Amber rather than red: the plan changing is normal shop-floor business,
+   not an error — but it has to be impossible to miss before starting a job. */
+.plan-alert {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: rgba(217,154,43,0.14); border: 1px solid var(--amber);
+  border-radius: var(--radius); padding: 14px 18px; margin-bottom: 14px;
+}
+.plan-alert-text { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 3px; }
+.plan-alert-text strong { color: var(--amber); font-size: 16px; letter-spacing: 0.02em; }
+.plan-alert-text span { font-size: 13px; color: var(--muted); }
+
+/* A job below the selectable cut-off: visible for planning, not startable. */
+.queue-item.locked { opacity: 0.5; cursor: default; }
+.queue-item.locked:hover { border-color: var(--border); }
+.qi-locked-note { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }
+
+/* Shown in place of the data tables while a job is still in setup. */
+.setup-note {
+  text-align: center; color: var(--muted); font-size: 14px;
+  padding: 34px 20px; border: 1px dashed var(--border); border-radius: var(--radius);
+}
+
+/* ---------- Language picker ---------- */
+.lang-picker {
+  -webkit-app-region: no-drag; /* must stay clickable inside the drag bar */
+  font-family: inherit; font-size: 12.5px; margin-right: 10px;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; cursor: pointer;
+}
+.lang-picker:hover { color: var(--ink); border-color: var(--accent); }
+.lang-picker option { background: var(--surface); color: var(--ink); }
+
+/* ---------- Right-to-left (Arabic) ---------- */
+/* Only layout direction flips. The timer stays LTR because a clock reads
+   the same way in every language, and flipping it would show 00:30:01 as
+   01:30:00 to an Arabic reader. */
+[dir="rtl"] .timer,
+[dir="rtl"] .mono-data,
+[dir="rtl"] .reason-option-code,
+[dir="rtl"] .qi-index { direction: ltr; unicode-bidi: embed; }
+[dir="rtl"] .topline,
+[dir="rtl"] .table-section-header,
+[dir="rtl"] .queue-item,
+[dir="rtl"] .run-actions,
+[dir="rtl"] .plan-alert { flex-direction: row-reverse; }
+[dir="rtl"] .wo-context,
+[dir="rtl"] .code-entry,
+[dir="rtl"] .reason-option,
+[dir="rtl"] .start-hint,
+[dir="rtl"] .field-group { text-align: right; }
+[dir="rtl"] .row-table th,
+[dir="rtl"] .row-table td { text-align: right; }
+
+/* The numeric keypad must NOT mirror in RTL. Digits are read left-to-right
+   in Arabic and Hindi alike, so a flipped pad (3-2-1) is simply wrong and
+   would cause mis-keyed operator IDs. */
+[dir="rtl"] .keypad,
+[dir="rtl"] .code-keypad { direction: ltr; }

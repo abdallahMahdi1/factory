@@ -24,6 +24,18 @@ function formatMinutes(mins) {
   const rem = m % 60;
   return h > 0 ? `${h}h ${rem}m` : `${rem}m`;
 }
+// Time spent setting up before production began. Zero when the operator
+// pressed "Start work" directly rather than "Start setup".
+function setupMinutes(session) {
+  if (!session.work_started_at) {
+    // Still in setup: count up to now for a live session, or to the end
+    // for one that was stopped without ever starting production.
+    const end = session.ended_at ? new Date(session.ended_at) : new Date();
+    return Math.max(0, (end - new Date(session.started_at)) / 60000);
+  }
+  return Math.max(0, (new Date(session.work_started_at) - new Date(session.started_at)) / 60000);
+}
+
 function grossMinutes(session) {
   const start = new Date(session.started_at).getTime();
   const end = session.ended_at ? new Date(session.ended_at).getTime() : Date.now();
@@ -230,8 +242,10 @@ function SessionDetail({ sessionId, fieldLookup, pauseReasonLookup, onClose, onS
         <div className="section-title">Timeline</div>
         <div className="row" style={{ fontSize: 13.5, color: "var(--muted)", marginBottom: 2 }}>
           {session.created_offline ? "Started while offline, synced automatically. " : ""}
+          {session.shift && <><span className={`badge ${session.shift === "night" ? "grey" : "amber"}`}>{session.shift} shift</span>{" "}</>}
           <strong style={{ color: "var(--ink)" }}>{formatMinutes(gross - pauseTotal)} worked</strong>
-          {" "}of {formatMinutes(gross)} total ({formatMinutes(pauseTotal)} paused)
+          {" "}of {formatMinutes(gross)} total ({formatMinutes(pauseTotal)} paused
+          {setupMinutes(session) > 0 ? `, ${formatMinutes(setupMinutes(session))} setup` : ""})
         </div>
         <Timeline segments={segments} pauseReasonLookup={pauseReasonLookup} />
 
@@ -408,15 +422,21 @@ export default function Sessions() {
           <table>
             <thead>
               <tr>
-                <th>Started</th><th>Machine</th><th>Operator</th><th>Duration</th><th>Status</th><th></th>
+                <th>Started</th><th>Shift</th><th>Machine</th><th>Operator</th><th>Setup</th><th>Duration</th><th>Status</th><th></th>
               </tr>
             </thead>
             <tbody>
               {sessions.map((s) => (
                 <tr key={s.id} style={{ cursor: "pointer" }} onClick={() => setOpenId(s.id)}>
                   <td className="mono-data">{formatDateTime(s.started_at)}</td>
+                  <td>
+                    {s.shift
+                      ? <span className={`badge ${s.shift === "night" ? "grey" : "amber"}`}>{s.shift}</span>
+                      : "—"}
+                  </td>
                   <td>{s.machine_name}</td>
                   <td>{s.operator_name}</td>
+                  <td className="mono-data">{formatMinutes(setupMinutes(s))}</td>
                   <td className="mono-data">{formatMinutes(grossMinutes(s))}</td>
                   <td><span className={`badge ${STATUS_BADGE[s.status] || "grey"}`}>{s.status}</span></td>
                   <td><button className="btn secondary" onClick={(e) => { e.stopPropagation(); setOpenId(s.id); }}>View / Edit</button></td>

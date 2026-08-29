@@ -8,6 +8,13 @@ let timerHandle = null;
 let pendingStop = { status: null, reasonId: null, runningHourEnd: null };
 let selectedWorkOrder = null; // the work order picked from the queue, carried through the Start form
 let queueTab = "pending"; // "pending" | "finished" — which list the Home screen is showing
+// The plan version this operator has already seen. When the backend
+// reports a newer one, the "Please Check - Plan Change" alert appears and
+// starting is blocked until the queue is refreshed.
+let acknowledgedPlanVersion = null;
+let planAlertDismissed = false;
+// Scrap rows being entered on the end-of-shift form.
+let scrapRows = [];
 // When set, render() shows this screen instead of computing one from state —
 // used for the Pause and Stop screens, which are reached FROM screen-running
 // but aren't a direct function of activeSession/currentOperator the way the
@@ -20,7 +27,7 @@ const rowSaveTimers = {};
 
 const SCREENS = [
   "screen-error", "screen-login", "screen-home", "screen-start-form",
-  "screen-running", "screen-pause-form", "screen-stop-form", "screen-queue-view",
+  "screen-running", "screen-pause-form", "screen-stop-form", "screen-queue-view", "screen-shift-finish",
 ];
 function showScreen(id) {
   SCREENS.forEach((s) => document.getElementById(s).classList.toggle("hidden", s !== id));
@@ -39,13 +46,26 @@ function fmtHMS(ms) {
 // for any pause that's still open) — this naturally freezes the number
 // while paused and resumes ticking on resume, with no special-casing needed.
 function computeWorkedMs(session) {
-  const start = new Date(session.startedAt).getTime();
+  // Two separate clocks, each starting from zero:
+  //   - during setup, count from when setup began
+  //   - once producing, count from when WORK began, not from setup
+  // Counting from startedAt in both phases would make the work timer jump
+  // straight to the setup duration the moment production starts.
+  const inSetup = session.phase === "setup";
+  const anchor = inSetup
+    ? session.startedAt
+    : (session.workStartedAt || session.startedAt);
+  const start = new Date(anchor).getTime();
   const now = Date.now();
+
   let pausedMs = 0;
   for (const p of session.pauses) {
     const pStart = new Date(p.startedAt).getTime();
     const pEnd = p.endedAt ? new Date(p.endedAt).getTime() : now;
-    pausedMs += pEnd - pStart;
+    // Pauses before the anchor (i.e. during setup) don't reduce work time.
+    const overlapStart = Math.max(pStart, start);
+    const overlapEnd = Math.max(pEnd, start);
+    pausedMs += Math.max(0, overlapEnd - overlapStart);
   }
   return now - start - pausedMs;
 }
@@ -58,13 +78,13 @@ function updateSyncBar(status) {
   dot.className = "dot";
   if (!status.online) {
     dot.classList.add("offline");
-    text.textContent = status.pendingCount > 0 ? `Offline — ${status.pendingCount} saved locally` : "Offline";
+    text.textContent = status.pendingCount > 0 ? t("offlineSaved", { n: status.pendingCount }) : t("offline");
   } else if (status.pendingCount > 0) {
     dot.classList.add("pending");
-    text.textContent = `Syncing ${status.pendingCount}…`;
+    text.textContent = t("syncing", { n: status.pendingCount });
   } else {
     dot.classList.add("online");
-    text.textContent = "Synced";
+    text.textContent = t("synced");
   }
 }
 function wireWindowControls() {
@@ -87,19 +107,20 @@ function fmtDate(iso) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function renderQueueItem(wo, clickable, index, isActive) {
+function renderQueueItem(wo, clickable, index, isActive, opts = {}) {
   const item = document.createElement("div");
-  item.className = `queue-item${clickable ? "" : " disabled"}${isActive ? " current" : ""}`;
+  const locked = !!opts.lockedNote;
+  item.className = `queue-item${clickable ? "" : " disabled"}${isActive ? " current" : ""}${locked ? " locked" : ""}`;
   // Everything the supervisor entered, shown right in the list so the
   // operator can size up a job (and spot the one they want) without
   // having to open it first.
   const metaParts = [];
-  if (wo.process) metaParts.push(`<span class="qi-k">Process</span> ${wo.process}`);
-  if (wo.quantity != null) metaParts.push(`<span class="qi-k">Qty</span> ${wo.quantity}`);
-  if (wo.inputDiameter != null) metaParts.push(`<span class="qi-k">Dia</span> ${wo.inputDiameter}`);
-  if (wo.totalTolerance) metaParts.push(`<span class="qi-k">Tol</span> ${wo.totalTolerance}`);
-  if (wo.dueDate) metaParts.push(`<span class="qi-k">Due</span> ${fmtDate(wo.dueDate)}`);
-  if (!clickable && wo.status === "in_progress" && !isActive) metaParts.push(`<span class="qi-k">Already in progress</span>`);
+  if (wo.process) metaParts.push(`<span class="qi-k">${t("fieldProcess")}</span> ${wo.process}`);
+  if (wo.quantity != null) metaParts.push(`<span class="qi-k">${t("fieldQty")}</span> ${wo.quantity}`);
+  if (wo.inputDiameter != null) metaParts.push(`<span class="qi-k">${t("fieldDia")}</span> ${wo.inputDiameter}`);
+  if (wo.totalTolerance) metaParts.push(`<span class="qi-k">${t("fieldTol")}</span> ${wo.totalTolerance}`);
+  if (wo.dueDate) metaParts.push(`<span class="qi-k">${t("fieldDue")}</span> ${fmtDate(wo.dueDate)}`);
+  if (!clickable && wo.status === "in_progress" && !isActive) metaParts.push(`<span class="qi-k">${t("alreadyInProgress")}</span>`);
 
   // Instructions and remarks get their own line — they're the things worth
   // reading before starting, so they shouldn't be buried among the numbers.
@@ -113,7 +134,11 @@ function renderQueueItem(wo, clickable, index, isActive) {
       ${metaParts.length ? `<div class="qi-meta">${metaParts.join(`<span class="qi-sep">·</span>`)}</div>` : ""}
       ${notes.length ? `<div class="qi-notes">⚠ ${notes.join(" · ")}</div>` : ""}
     </div>
-    ${isActive ? `<span class="current-badge">● RUNNING NOW</span>` : `<span class="priority-pill ${wo.priority}">${wo.priority}</span>`}
+    ${isActive
+      ? `<span class="current-badge">● ${t("runningNow")}</span>`
+      : locked
+        ? `<span class="qi-locked-note">${opts.lockedNote}</span>`
+        : `<span class="priority-pill ${wo.priority}">${t("priority" + wo.priority.charAt(0).toUpperCase() + wo.priority.slice(1))}</span>`}
     ${clickable ? `<span class="qi-arrow">›</span>` : ""}
   `;
   if (clickable) item.addEventListener("click", () => openStartFormForWorkOrder(wo));
@@ -161,6 +186,10 @@ async function refreshQueue() {
     await window.api.forceSync();
     const fresh = await window.api.getState();
     state = { ...state, ...fresh };
+    // Refreshing IS the acknowledgement — the operator has now seen
+    // whatever the supervisor published.
+    acknowledgedPlanVersion = state.config?.planVersion ?? 0;
+    planAlertDismissed = false;
     renderQueue();
   } catch (err) {
     console.error("Refresh failed:", err);
@@ -168,6 +197,20 @@ async function refreshQueue() {
     btn.disabled = false;
     icon.classList.remove("spinning");
   }
+}
+
+// True when the supervisor has published a newer plan than this operator
+// has seen. Starting is blocked until they refresh — a stale queue is
+// exactly how someone ends up running a job that was just cancelled.
+function planRefreshRequired() {
+  const current = state.config?.planVersion ?? 0;
+  return acknowledgedPlanVersion !== null && current > acknowledgedPlanVersion;
+}
+
+function renderPlanAlert() {
+  const el = $("plan-alert");
+  if (!el) return;
+  el.classList.toggle("hidden", !(planRefreshRequired() && !planAlertDismissed));
 }
 
 function renderQueue() {
@@ -179,14 +222,23 @@ function renderQueue() {
   $("queue-list-pending").classList.toggle("hidden", queueTab !== "pending");
   $("queue-list-finished").classList.toggle("hidden", queueTab !== "finished");
 
+  renderPlanAlert();
+
   const pending = $("queue-list-pending");
   pending.innerHTML = "";
   const pendingItems = state.config?.workOrders?.pending || [];
+  // Only the first few jobs can actually be started — the rest are shown
+  // so the operator can see what's coming, not to pick from.
+  const selectableCount = state.config?.selectableCount ?? 5;
   if (pendingItems.length === 0) {
-    pending.innerHTML = `<div class="queue-empty">No work orders planned for this machine yet.<br>Ask your supervisor to add one.</div>`;
+    pending.innerHTML = `<div class="queue-empty">${t("noWorkOrders")}<br>${t("askSupervisor")}</div>`;
   } else {
     pendingItems.forEach((wo, i) => {
-      pending.appendChild(renderQueueItem(wo, wo.status === "pending", i + 1));
+      const withinLimit = i < selectableCount;
+      const startable = wo.status === "pending" && withinLimit && !planRefreshRequired();
+      pending.appendChild(renderQueueItem(wo, startable, i + 1, false, {
+        lockedNote: !withinLimit ? t("notYetTopOnly", { n: selectableCount }) : null,
+      }));
     });
   }
 
@@ -194,7 +246,7 @@ function renderQueue() {
   finished.innerHTML = "";
   const finishedItems = state.config?.workOrders?.finished || [];
   if (finishedItems.length === 0) {
-    finished.innerHTML = `<div class="queue-empty">Nothing finished yet.</div>`;
+    finished.innerHTML = `<div class="queue-empty">${t("nothingFinished")}</div>`;
   } else {
     finishedItems.forEach((wo, i) => {
       finished.appendChild(renderQueueItem(wo, false, i + 1));
@@ -274,7 +326,7 @@ function renderRowTable(tableEl, fields, rows, tableName, addBtn) {
     const td = document.createElement("td");
     td.className = "table-empty";
     td.colSpan = 3;
-    td.textContent = "No columns configured here yet — ask your supervisor to add some in the admin panel.";
+    td.textContent = t("noColumns");
     tr.appendChild(td);
     tbody.appendChild(tr);
     tableEl.appendChild(tbody);
@@ -315,7 +367,7 @@ function renderRowTable(tableEl, fields, rows, tableName, addBtn) {
     const delBtn = document.createElement("button");
     delBtn.className = "row-delete-btn";
     delBtn.textContent = "✕";
-    delBtn.title = "Remove row";
+    delBtn.title = t("removeRow");
     delBtn.disabled = rows.length <= 1; // minimum 1 row always required
     delBtn.addEventListener("click", () => removeRow(tableName, rowIndex));
     actionCell.appendChild(delBtn);
@@ -400,6 +452,18 @@ function renderRunningTables() {
   if (!host) return;
   host.innerHTML = "";
 
+  // During setup there's nothing to record yet — the operator is at the
+  // machine setting it up, not producing. Showing empty data tables would
+  // just invite them to fill in numbers that don't exist yet, so the
+  // tables only appear once "Start work" is pressed.
+  if (state.activeSession?.phase === "setup") {
+    const note = document.createElement("div");
+    note.className = "setup-note";
+    note.textContent = t("setupInProgress");
+    host.appendChild(note);
+    return;
+  }
+
   for (const screen of currentScreens()) {
     const section = document.createElement("div");
     section.className = "table-section";
@@ -411,7 +475,7 @@ function renderRunningTables() {
     title.textContent = screen.label || screen.key;
     const addBtn = document.createElement("button");
     addBtn.className = "btn secondary";
-    addBtn.textContent = "+ Add row";
+    addBtn.textContent = t("addRow");
     addBtn.addEventListener("click", () => addRow(screen.key));
     header.appendChild(title);
     header.appendChild(addBtn);
@@ -436,6 +500,11 @@ function renderStartForm() {
   renderWorkOrderContext($("form-wo-context"), selectedWorkOrder);
 }
 
+function fmtDuration(fromIso, toIso) {
+  const mins = Math.max(0, Math.round((new Date(toIso) - new Date(fromIso)) / 60000));
+  const h = Math.floor(mins / 60);
+  return h > 0 ? `${h}h ${mins % 60}m` : `${mins}m`;
+}
 function fmtClock(iso) {
   if (!iso) return null;
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -449,9 +518,13 @@ function renderRunning() {
 
   const pill = $("run-status-pill");
   const paused = session.status === "paused";
-  pill.textContent = paused ? "PAUSED" : "RUNNING";
-  pill.classList.toggle("paused", paused);
-  $("pause-btn").classList.toggle("hidden", paused);
+  const inSetup = session.phase === "setup";
+  pill.textContent = inSetup ? t("underSetup") : paused ? t("paused") : t("running");
+  pill.classList.toggle("paused", paused || inSetup);
+  // During setup the only forward action is "Start work" — pausing or
+  // stopping a job that hasn't started producing yet isn't meaningful.
+  $("begin-work-btn").classList.toggle("hidden", !inSetup);
+  $("pause-btn").classList.toggle("hidden", paused || inSetup);
   $("resume-btn").classList.toggle("hidden", !paused);
 
   renderWorkOrderContext($("run-wo-context"), session.workOrderSnapshot);
@@ -460,7 +533,11 @@ function renderRunning() {
   // recorded the moment Start was tapped, and the worked-time duration
   // above is computed automatically (start subtracted from now, minus any
   // pauses). Nothing for the operator to read off a machine and type in.
-  $("run-hour-summary").textContent = `Started at ${fmtClock(session.startedAt)}`;
+  $("run-hour-summary").textContent = session.phase === "setup"
+    ? t("setupStartedAt", { time: fmtClock(session.startedAt) })
+    : session.workStartedAt && session.workStartedAt !== session.startedAt
+      ? t("setupThenWorking", { duration: fmtDuration(session.startedAt, session.workStartedAt), time: fmtClock(session.workStartedAt) })
+      : t("startedAt", { time: fmtClock(session.startedAt) });
 
   renderRunningTables();
 }
@@ -536,9 +613,13 @@ function openStartFormForWorkOrder(wo) {
   showScreen("screen-start-form");
 }
 
-async function submitStartForm() {
+async function submitStartForm(phase) {
   if (!selectedWorkOrder) {
-    $("form-error").textContent = "No work order selected — go back and pick one from the queue.";
+    $("form-error").textContent = t("noWorkOrderSelected");
+    return;
+  }
+  if (planRefreshRequired()) {
+    $("form-error").textContent = t("planChangedBlocked");
     return;
   }
   try {
@@ -546,6 +627,7 @@ async function submitStartForm() {
       operatorId: currentOperator.id,
       operatorName: currentOperator.name,
       workOrder: selectedWorkOrder,
+      phase,
     });
     state.activeSession = session;
     selectedWorkOrder = null;
@@ -566,7 +648,7 @@ async function submitStartForm() {
 // the pause API call itself failing) into the same UI.
 function buildCodeEntryUI(containerEl, { reasons, onMatch, placeholder }) {
   containerEl.innerHTML = `
-    <input class="text-input reason-filter" type="text" placeholder="${placeholder || "Search code or reason…"}" />
+    <input class="text-input reason-filter" type="text" placeholder="${placeholder || t("searchReason")}" />
     <div class="error-text code-error"></div>
     <div class="reason-options"></div>
   `;
@@ -583,11 +665,11 @@ function buildCodeEntryUI(containerEl, { reasons, onMatch, placeholder }) {
 
     optionsEl.innerHTML = "";
     if (list.length === 0) {
-      optionsEl.innerHTML = `<div class="reason-empty">No reasons are set up for this machine yet — ask your supervisor.</div>`;
+      optionsEl.innerHTML = `<div class="reason-empty">${t("noReasons")}</div>`;
       return;
     }
     if (matches.length === 0) {
-      optionsEl.innerHTML = `<div class="reason-empty">Nothing matches "${filterInput.value.trim()}".</div>`;
+      optionsEl.innerHTML = `<div class="reason-empty">${t("nothingMatches", { q: filterInput.value.trim() })}</div>`;
       return;
     }
     for (const r of matches) {
@@ -630,6 +712,127 @@ function openPauseScreen() {
   render();
 }
 
+// ---------- shift finish ----------
+// Pressing "Shift finish" opens a scrap form; signing out only happens
+// once that's submitted, so scrap and the attendance record always arrive
+// together.
+function openShiftFinish() {
+  // A job left running would keep counting against an operator who has
+  // gone home, so it has to be stopped first.
+  if (state.activeSession) {
+    window.alert(t("stopJobFirst"));
+    return;
+  }
+  scrapRows = [];
+  $("shift-finish-error").textContent = "";
+  $("shift-machine-name").textContent = state.config?.machine?.name || "—";
+  renderScrapTable();
+  screenOverride = "screen-shift-finish";
+  render();
+}
+
+function renderScrapTable() {
+  const tableEl = $("scrap-table");
+  if (!tableEl) return;
+  tableEl.innerHTML = "";
+  const materials = state.config?.scrapMaterials || [];
+
+  if (scrapRows.length === 0) {
+    const tbody = document.createElement("tbody");
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.className = "table-empty";
+    td.colSpan = 4;
+    td.textContent = t("noScrapYet");
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    tableEl.appendChild(tbody);
+    return;
+  }
+
+  const thead = document.createElement("thead");
+  thead.innerHTML = `<tr><th></th><th>${t("scrapMaterial")}</th><th>${t("scrapKg")}</th><th></th></tr>`;
+  tableEl.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  scrapRows.forEach((row, i) => {
+    const tr = document.createElement("tr");
+
+    const idx = document.createElement("td");
+    idx.className = "row-index";
+    idx.textContent = i + 1;
+    tr.appendChild(idx);
+
+    const matCell = document.createElement("td");
+    const select = document.createElement("select");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "— " + t("scrapMaterial") + " —";
+    select.appendChild(placeholder);
+    for (const m of materials) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.value;
+      if (m.id === row.materialId) opt.selected = true;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      row.materialId = select.value;
+      row.materialLabel = select.options[select.selectedIndex]?.textContent || "";
+    });
+    matCell.appendChild(select);
+    tr.appendChild(matCell);
+
+    const kgCell = document.createElement("td");
+    const kgInput = document.createElement("input");
+    kgInput.type = "number";
+    kgInput.step = "any";
+    kgInput.min = "0";
+    kgInput.inputMode = "decimal";
+    if (row.kg != null) kgInput.value = row.kg;
+    kgInput.addEventListener("input", () => { row.kg = kgInput.value; });
+    kgCell.appendChild(kgInput);
+    tr.appendChild(kgCell);
+
+    const actions = document.createElement("td");
+    const del = document.createElement("button");
+    del.className = "row-delete-btn";
+    del.textContent = "✕";
+    del.title = t("removeRow");
+    del.addEventListener("click", () => { scrapRows.splice(i, 1); renderScrapTable(); });
+    actions.appendChild(del);
+    tr.appendChild(actions);
+
+    tbody.appendChild(tr);
+  });
+  tableEl.appendChild(tbody);
+}
+
+async function confirmShiftFinish() {
+  // Every row must be complete — a half-filled row means someone was
+  // interrupted mid-entry, and silently dropping it would lose real scrap.
+  const incomplete = scrapRows.some((r) => !r.materialId || !(Number(r.kg) > 0));
+  if (incomplete) {
+    $("shift-finish-error").textContent = t("scrapNeedsMaterial");
+    return;
+  }
+  try {
+    await window.api.logoutOperator({
+      scrap: scrapRows.map((r) => ({
+        materialId: r.materialId,
+        materialLabel: r.materialLabel,
+        kg: Number(r.kg),
+      })),
+    });
+  } catch (err) {
+    console.error("Sign-out failed:", err);
+  }
+  scrapRows = [];
+  currentOperator = null;
+  screenOverride = null;
+  render();
+}
+
 // ---------- stop screen ----------
 function resetStopForm() {
   pendingStop = { status: null, reasonId: null };
@@ -652,6 +855,14 @@ function openStopScreen() {
 function chooseStopStatus(status) {
   if (status === "finished") {
     const session = state.activeSession;
+    // A job still in setup never produced anything, so "Finished" doesn't
+    // apply — it can only be abandoned. Saying so plainly beats listing
+    // every empty table the operator was never shown.
+    if (session?.phase === "setup") {
+      $("stop-choice-error").textContent =
+        t("stillInSetup");
+      return;
+    }
     // Every screen that actually has columns configured needs at least one
     // row before the job can be called finished — a machine with a Scrap
     // table shouldn't be finishable with Scrap left blank.
@@ -659,7 +870,7 @@ function chooseStopStatus(status) {
     const emptyScreens = screensWithFields.filter((sc) => currentRows(sc.key).length === 0);
     if (emptyScreens.length > 0) {
       const names = emptyScreens.map((sc) => sc.label || sc.key).join(", ");
-      $("stop-choice-error").textContent = `Add at least one row to ${names} before finishing.`;
+      $("stop-choice-error").textContent = t("addRowsBefore", { names });
       return;
     }
   }
@@ -710,12 +921,22 @@ function wireEvents() {
   $("login-submit").addEventListener("click", submitLogin);
   $("login-input").addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
 
-  $("logout-btn").addEventListener("click", () => { currentOperator = null; render(); });
+  $("logout-btn").addEventListener("click", openShiftFinish);
+  $("scrap-add-row-btn").addEventListener("click", () => { scrapRows.push({ materialId: "", materialLabel: "", kg: "" }); renderScrapTable(); });
+  $("shift-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });
+  $("shift-confirm-btn").addEventListener("click", confirmShiftFinish);
   $("queue-tab-pending").addEventListener("click", () => { queueTab = "pending"; renderQueue(); });
   $("queue-tab-finished").addEventListener("click", () => { queueTab = "finished"; renderQueue(); });
   $("queue-refresh-btn").addEventListener("click", refreshQueue);
   $("form-cancel-btn").addEventListener("click", () => { selectedWorkOrder = null; showScreen("screen-home"); });
-  $("form-submit-btn").addEventListener("click", submitStartForm);
+  $("form-submit-btn").addEventListener("click", () => submitStartForm("running"));
+  $("form-setup-btn").addEventListener("click", () => submitStartForm("setup"));
+  $("begin-work-btn").addEventListener("click", async () => {
+    state.activeSession = await window.api.beginWork();
+    render();
+  });
+  $("plan-alert-refresh").addEventListener("click", refreshQueue);
+  $("plan-alert-dismiss").addEventListener("click", () => { planAlertDismissed = true; renderPlanAlert(); });
 
 
   $("pause-btn").addEventListener("click", openPauseScreen);
@@ -743,12 +964,33 @@ function wireEvents() {
   });
 }
 
+// Re-renders every piece of fixed text on the page. Called on startup and
+// whenever the language changes — cheaper and less error-prone than
+// translating at each individual render site.
+function applyTranslations() {
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = t(el.getAttribute("data-i18n"));
+  }
+  for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+    el.placeholder = t(el.getAttribute("data-i18n-placeholder"));
+  }
+  // Screens built in JS (queue items, tables, reason lists) aren't tagged,
+  // so re-render whatever is currently showing.
+  render();
+}
+
 async function init() {
   wireEvents();
   const fresh = await window.api.getState();
   state = { ...state, ...fresh };
+  // Language comes from this machine's config.json — one setting per PC,
+  // nothing for the operator to choose or accidentally change.
+  setLanguage(fresh.language || "en");
+  // Whatever the plan is at launch is the baseline — the operator hasn't
+  // missed anything yet, so no alert on startup.
+  acknowledgedPlanVersion = state.config?.planVersion ?? 0;
   updateSyncBar(state.status);
-  render();
+  applyTranslations();
   timerHandle = setInterval(tickTimer, 1000);
 }
 

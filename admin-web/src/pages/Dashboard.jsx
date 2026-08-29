@@ -5,7 +5,14 @@ import Timeline from "../components/Timeline.jsx";
 function statusOf(m) {
   if (m.alerts.offline) return { color: "grey", label: "Offline" };
   if (m.alerts.longRunningSession) return { color: "red", label: "Running too long" };
-  if (m.currentSession) return m.currentSession.status === "paused" ? { color: "amber", label: "Paused" } : { color: "green", label: "Running" };
+  if (m.currentSession) {
+    // Setup is its own state — a machine being set up is neither producing
+    // nor idle, and showing it as "Running" hides the very number the
+    // setup timer exists to capture.
+    if (m.currentSession.inSetup) return { color: "blue", label: "Under setup" };
+    if (m.currentSession.status === "paused") return { color: "amber", label: "Paused" };
+    return { color: "green", label: "Running" };
+  }
   return { color: "grey", label: "Idle" };
 }
 

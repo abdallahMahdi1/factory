@@ -89,7 +89,7 @@ router.get("/export.csv", (req, res) => {
   // Two-row header to mirror the original sheet: a group row (Input /
   // Output / Raw Materials / ...) above the field-label row, matching how
   // the source report was laid out.
-  const fixedCols = ["Date", "Operator", "Started", "Ended", "Status"];
+  const fixedCols = ["Date", "Shift", "Operator", "Started", "Ended", "Status"];
   const groupHeaderRow = [...fixedCols.map(() => ""), ...fields.map((f) => f.group_label || "")];
   const labelHeaderRow = [...fixedCols, ...fields.map((f) => f.label)];
 
@@ -116,6 +116,7 @@ router.get("/export.csv", (req, res) => {
       });
       rows.push([
         new Date(s.started_at).toLocaleDateString(),
+        s.shift || "",
         s.operator_name,
         new Date(s.started_at).toLocaleTimeString(),
         s.ended_at ? new Date(s.ended_at).toLocaleTimeString() : "",
