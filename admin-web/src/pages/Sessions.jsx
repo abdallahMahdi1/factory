@@ -422,7 +422,7 @@ export default function Sessions() {
           <table>
             <thead>
               <tr>
-                <th>Started</th><th>Shift</th><th>Machine</th><th>Operator</th><th>Setup</th><th>Duration</th><th>Status</th><th></th>
+                <th>Started</th><th>Shift</th><th>Machine</th><th>W.O. No.</th><th>Operator</th><th>Setup</th><th>Duration</th><th>Status</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -435,6 +435,7 @@ export default function Sessions() {
                       : "—"}
                   </td>
                   <td>{s.machine_name}</td>
+                  <td className="mono-data">{s.work_order_job_no || "—"}</td>
                   <td>{s.operator_name}</td>
                   <td className="mono-data">{formatMinutes(setupMinutes(s))}</td>
                   <td className="mono-data">{formatMinutes(grossMinutes(s))}</td>

@@ -17,15 +17,23 @@
   "build": {
     "appId": "com.factorytracker.operator",
     "productName": "Factory Tracker",
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "src/**/*",
       "renderer/**/*",
       "config.example.json"
     ],
-    "afterAllArtifactBuild": "build-hooks/copy-config.js",
     "win": {
-      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "signAndEditExecutable": false
     },
     "linux": {
@@ -33,6 +41,24 @@
     },
     "mac": {
       "target": "dmg"
-    }
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Factory Tracker"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "abdallahMahdi1",
+        "repo": "factory"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   }
 }

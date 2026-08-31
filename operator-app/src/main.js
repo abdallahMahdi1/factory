@@ -4,36 +4,59 @@ const fs = require("fs");
 
 const { createLocalDb } = require("./localDb");
 const { createSessionManager } = require("./sessionManager");
+const { initAutoUpdate, getUpdateState } = require("./autoUpdate");
 
 // ---- Load this machine's config ----
-// config.json lives NEXT TO the installed app (not bundled inside it), so
-// each shop-floor PC gets its own copy pointing at its own machine, without
-// rebuilding the app per machine. See config.example.json for the format.
+// Each shop-floor PC gets its own config.json pointing at its own machine,
+// so one build serves every machine. See config.example.json for the format.
 //
-// IMPORTANT (portable .exe builds): electron-builder's "portable" target
-// self-extracts into a temp folder at launch and runs from there, so
-// app.getPath("exe") resolves to that TEMP location — NOT the folder the
-// person actually double-clicked in. electron-builder sets
-// PORTABLE_EXECUTABLE_DIR specifically to solve this: it's the real,
-// visible folder the portable .exe was launched from, which is where
-// config.json actually lives. Fall back to app.getPath("exe") for
-// non-portable builds (installer-based, or running the unpacked app
-// directly) where PORTABLE_EXECUTABLE_DIR isn't set.
+// The authoritative location is the USER-DATA folder, deliberately not the
+// install folder: an auto-update replaces everything in the install
+// directory, and a machine losing its API key on every update would mean
+// someone walking the floor to re-enter them. User-data survives updates
+// and uninstall/reinstall.
+//
+// Two legacy locations are still read, in order, so existing installs keep
+// working and get migrated automatically on first launch:
+//   1. next to a portable .exe (PORTABLE_EXECUTABLE_DIR) — the old format
+//   2. next to the executable / project root — dev and older builds
+const USER_CONFIG_PATH = path.join(app.getPath("userData"), "config.json");
 const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath("exe"));
-const CONFIG_PATH = process.env.FT_CONFIG_PATH || path.join(exeDir, "config.json");
-const FALLBACK_CONFIG_PATH = path.join(__dirname, "..", "config.json"); // for `npm start` in dev
+const LEGACY_PATHS = [
+  path.join(exeDir, "config.json"),
+  path.join(__dirname, "..", "config.json"), // `npm start` in dev
+];
 
 function loadDeviceConfig() {
-  const configPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : FALLBACK_CONFIG_PATH;
-  if (!fs.existsSync(configPath)) {
+  const explicit = process.env.FT_CONFIG_PATH;
+  const candidates = explicit ? [explicit] : [USER_CONFIG_PATH, ...LEGACY_PATHS];
+  const configPath = candidates.find((p) => p && fs.existsSync(p));
+
+  if (!configPath) {
+    // Name the exact path rather than "next to the app": with an installer
+    // build there's no obvious folder to point at, and someone setting up a
+    // PC shouldn't have to guess.
     throw new Error(
-      `No config.json found. Copy config.example.json to config.json next to the app and fill in ` +
-        `apiBase and machineApiKey for this machine (get the key from the admin panel's Machines page).`
+      `No config.json found. Create it at:\n${USER_CONFIG_PATH}\n\n` +
+        `It needs apiBase and machineApiKey for this machine — get the key from ` +
+        `the admin panel's Machines page. See config.example.json for the format.`
     );
   }
   const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
   if (!raw.apiBase || !raw.machineApiKey) {
     throw new Error("config.json must include both apiBase and machineApiKey.");
+  }
+
+  // Migrate a legacy config into user-data once, so the next update can't
+  // take it away. Best-effort: a read-only folder shouldn't stop the app.
+  if (configPath !== USER_CONFIG_PATH && !explicit) {
+    try {
+      fs.mkdirSync(path.dirname(USER_CONFIG_PATH), { recursive: true });
+      fs.copyFileSync(configPath, USER_CONFIG_PATH);
+      console.log(`Copied config.json to ${USER_CONFIG_PATH} so updates can't overwrite it.`);
+    } catch (err) {
+      console.warn("Could not copy config.json into user-data:", err.message);
+    }
   }
   return raw;
 }
@@ -99,6 +122,12 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  // Background updates: downloads silently, installs when the app next
+  // closes. Never interrupts a running job.
+  initAutoUpdate((updateState) => {
+    if (win && !win.isDestroyed()) win.webContents.send("update-state", updateState);
+  });
+
   // Kick off an immediate sync (in case the app was just restarted with a
   // queue left over from before), then keep syncing on an interval forever.
   const cycle = async () => {
@@ -128,6 +157,8 @@ app.on("window-all-closed", () => {
 // The renderer never talks to the network or the database directly (see
 // preload.js) — everything goes through sessionManager so there's exactly
 // one place the offline/sync rules live.
+
+ipcMain.handle("get-update-state", () => getUpdateState());
 
 ipcMain.handle("get-state", () => ({
   // Which language this machine's screen is in. Set once per PC in

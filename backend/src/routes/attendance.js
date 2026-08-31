@@ -36,7 +36,9 @@ router.get("/", (req, res) => {
       .all(...rows.map((r) => r.id));
     for (const sc of scrapRows) {
       (scrapByAttendance[sc.attendance_id] ||= []).push({
-        materialLabel: sc.material_label,
+        scrapCode: sc.scrap_code,
+        scrapLabel: sc.scrap_label,
+        description: sc.description,
         kg: sc.kg,
       });
     }
@@ -60,6 +62,62 @@ router.get("/", (req, res) => {
       ? Math.round(((new Date(r.signed_out_at) - new Date(r.signed_in_at)) / 60000) * 10) / 10
       : null,
   })));
+});
+
+// ---- Scrap report ----
+// One row per scrap line, shaped like the factory's own scrap sheet:
+// date, shift, operator, source machine, code, description, quantity.
+router.get("/scrap", (req, res) => {
+  const { from, to, operatorId, machineId, shift, limit } = req.query;
+  const clauses = [];
+  const params = [];
+  if (operatorId) { clauses.push("a.operator_id = ?"); params.push(operatorId); }
+  if (machineId) { clauses.push("a.machine_id = ?"); params.push(machineId); }
+  if (shift) { clauses.push("a.shift = ?"); params.push(shift); }
+  if (from) { clauses.push("a.signed_in_at >= ?"); params.push(from); }
+  if (to) { clauses.push("a.signed_in_at <= ?"); params.push(to); }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+
+  const rows = db
+    .prepare(
+      `SELECT s.*, a.signed_in_at, a.shift, a.operator_id,
+              o.name as operator_name, o.id_number,
+              m.name as machine_name, m.code as machine_code
+       FROM shift_scrap s
+       JOIN operator_attendance a ON a.id = s.attendance_id
+       JOIN operators o ON o.id = a.operator_id
+       JOIN machines m ON m.id = a.machine_id
+       ${where}
+       ORDER BY a.signed_in_at DESC, s.recorded_at ASC
+       LIMIT ?`
+    )
+    .all(...params, Number(limit) || 2000);
+
+  const byCode = {};
+  for (const r of rows) {
+    const key = r.scrap_code ? `${r.scrap_code} — ${r.scrap_label || ""}`.trim() : (r.scrap_label || "(no code)");
+    byCode[key] = (byCode[key] || 0) + r.kg;
+  }
+
+  res.json({
+    rows: rows.map((r) => ({
+      id: r.id,
+      scrapDate: r.signed_in_at,
+      shift: r.shift,
+      operatorName: r.operator_name,
+      idNumber: r.id_number,
+      scrapSource: r.machine_name,
+      machineCode: r.machine_code,
+      scrapCode: r.scrap_code,
+      scrapLabel: r.scrap_label,
+      description: r.description,
+      kg: r.kg,
+    })),
+    totalKg: Math.round(rows.reduce((sum, r) => sum + r.kg, 0) * 100) / 100,
+    byCode: Object.entries(byCode)
+      .map(([code, kg]) => ({ code, kg: Math.round(kg * 100) / 100 }))
+      .sort((a, b) => b.kg - a.kg),
+  });
 });
 
 module.exports = router;

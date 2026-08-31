@@ -134,19 +134,10 @@ router.get("/config", (req, res) => {
     // whether to raise the "Please Check - Plan Change" alert.
     // Shift boundaries and timezone, so the app can label the current
     // shift without needing its own clock configuration.
-    // Materials the operator can pick from on the end-of-shift scrap form.
-    // Comes from the "Scrap Materials" master list if the admin made one,
-    // otherwise falls back to "Materials" so the form is usable out of the
-    // box rather than showing an empty dropdown.
-    scrapMaterials: (() => {
-      const list =
-        db.prepare("SELECT id FROM option_lists WHERE name = 'Scrap Materials'").get() ||
-        db.prepare("SELECT id FROM option_lists WHERE name = 'Materials'").get();
-      if (!list) return [];
-      return db
-        .prepare("SELECT id, value FROM option_items WHERE option_list_id = ? AND active = 1 ORDER BY value ASC")
-        .all(list.id);
-    })(),
+    // Codes the operator picks from on the end-of-shift scrap form.
+    scrapCodes: db
+      .prepare("SELECT id, code, label FROM scrap_codes WHERE active = 1 ORDER BY code ASC")
+      .all(),
     shiftSettings: getSettings(),
     currentShift: shiftFor(new Date()),
     planVersion: machine.plan_version || 0,
@@ -240,19 +231,23 @@ router.post("/sync", (req, res) => {
           if (Array.isArray(scrap)) {
             db.prepare("DELETE FROM shift_scrap WHERE attendance_id = ?").run(attendanceId);
             const insert = db.prepare(
-              "INSERT INTO shift_scrap (id, attendance_id, material_id, material_label, kg) VALUES (?, ?, ?, ?, ?)"
+              `INSERT INTO shift_scrap (id, attendance_id, scrap_code_id, scrap_code, scrap_label, description, kg)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
             );
             for (const row of scrap) {
               const kg = Number(row?.kg);
               if (!row || !isFinite(kg) || kg <= 0) continue; // skip blank/invalid lines
-              // Resolve the label now: if the admin later renames or
-              // removes the material, this record still reads correctly.
-              const item = row.materialId
-                ? db.prepare("SELECT value FROM option_items WHERE id = ?").get(row.materialId)
+              // Resolve code and label now: if the admin later renames or
+              // removes the code, this record still reads correctly.
+              const codeRow = row.scrapCodeId
+                ? db.prepare("SELECT code, label FROM scrap_codes WHERE id = ?").get(row.scrapCodeId)
                 : null;
               insert.run(
-                uuid(), attendanceId, row.materialId || null,
-                item?.value || row.materialLabel || "(unspecified)", kg
+                uuid(), attendanceId, row.scrapCodeId || null,
+                codeRow?.code || row.scrapCode || null,
+                codeRow?.label || row.scrapLabel || null,
+                row.description || null,
+                kg
               );
             }
           }

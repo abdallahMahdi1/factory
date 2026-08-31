@@ -227,13 +227,14 @@ export default function MasterLists() {
   const [optionLists, setOptionLists] = useState([]);
   const [pauseReasons, setPauseReasons] = useState([]);
   const [stopReasons, setStopReasons] = useState([]);
+  const [scrapCodes, setScrapCodes] = useState([]);
   const [newListName, setNewListName] = useState("");
   const [error, setError] = useState("");
 
   async function load() {
     try {
-      const [ol, pr, sr] = await Promise.all([api.optionLists.list(), api.pauseReasons.list(), api.stopReasons.list()]);
-      setOptionLists(ol); setPauseReasons(pr); setStopReasons(sr);
+      const [ol, pr, sr, sc] = await Promise.all([api.optionLists.list(), api.pauseReasons.list(), api.stopReasons.list(), api.scrapCodes.list()]);
+      setOptionLists(ol); setPauseReasons(pr); setStopReasons(sr); setScrapCodes(sc);
     } catch (err) {
       setError(err.message);
     }
@@ -281,6 +282,16 @@ export default function MasterLists() {
           onBulkDone={load}
           onSave={async (id, data) => { await api.pauseReasons.update(id, data); load(); }}
           onRemove={async (id) => { await api.pauseReasons.remove(id); load(); }}
+        />
+        <ReasonList
+          title="Scrap codes"
+          hint="Shown when an operator records scrap at the end of their shift."
+          items={scrapCodes}
+          onAdd={async (label, code) => { await api.scrapCodes.create(label, code); load(); }}
+          onBulkAdd={(label, code) => api.scrapCodes.create(label, code)}
+          onBulkDone={load}
+          onSave={async (id, data) => { await api.scrapCodes.update(id, data); load(); }}
+          onRemove={async (id) => { await api.scrapCodes.remove(id); load(); }}
         />
         <ReasonList
           title="Stop reasons"

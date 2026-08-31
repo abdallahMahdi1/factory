@@ -13,6 +13,7 @@ const dashboardRoutes = require("./routes/dashboard");
 const deviceRoutes = require("./routes/device");
 const settingsRoutes = require("./routes/settings");
 const attendanceRoutes = require("./routes/attendance");
+const backupRoutes = require("./routes/backup");
 
 // Auto-seed on boot if there's no admin login yet. This exists specifically
 // for hosts like Render's free tier where Shell access (needed to run
@@ -53,6 +54,7 @@ app.use("/api/sessions", requireAdmin, sessionRoutes);
 app.use("/api/dashboard", requireAdmin, dashboardRoutes);
 app.use("/api/settings", requireAdmin, settingsRoutes);
 app.use("/api/attendance", requireAdmin, attendanceRoutes);
+app.use("/api/backup", requireAdmin, backupRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

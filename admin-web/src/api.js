@@ -147,7 +147,34 @@ export const api = {
     },
   },
 
+  backup: {
+    status: () => request("/backup/status"),
+    // Downloaded via fetch rather than request() so we get the raw text to
+    // save as a file, not a parsed object.
+    download: async () => {
+      const res = await fetch(`${API_BASE}/backup`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      if (!res.ok) throw new Error(`Backup failed (${res.status})`);
+      return res.text();
+    },
+    restore: (backup) => request("/backup/restore", { method: "POST", body: { backup, confirm: "REPLACE ALL DATA" } }),
+  },
+
+  scrapCodes: {
+    list: () => request("/scrap-codes"),
+    create: (label, code) => request("/scrap-codes", { method: "POST", body: { label, code } }),
+    update: (id, data) => request(`/scrap-codes/${id}`, { method: "PUT", body: data }),
+    remove: (id) => request(`/scrap-codes/${id}`, { method: "DELETE" }),
+  },
+
   attendance: {
+    scrapReport: (params = {}) => {
+      const qs = new URLSearchParams(
+        Object.entries(params).filter(([, v]) => v !== "" && v != null)
+      ).toString();
+      return request(`/attendance/scrap${qs ? `?${qs}` : ""}`);
+    },
     list: (params = {}) => {
       const qs = new URLSearchParams(
         Object.entries(params).filter(([, v]) => v !== "" && v != null)

@@ -14,6 +14,7 @@
       <span class="dot" id="sync-dot"></span>
       <span id="sync-text">Starting…</span>
     </div>
+    <div class="app-version" id="app-version" title="Version"></div>
     <div class="window-controls">
       <button class="win-btn" id="win-minimize" title="Minimize">&#8211;</button>
       <button class="win-btn" id="win-maximize" title="Maximize">&#9633;</button>
@@ -73,7 +74,10 @@
       </div>
 
       <div id="queue-list-pending" class="queue-list"></div>
-      <div id="queue-list-finished" class="queue-list hidden"></div>
+      <div id="queue-finished-wrap" class="hidden">
+        <input id="finished-search" class="text-input finished-search" type="text" data-i18n-placeholder="searchFinished" placeholder="Search finished jobs…" />
+        <div id="queue-list-finished" class="queue-list"></div>
+      </div>
     </section>
 
     <!-- Start form: the picked work order's context -->

@@ -220,29 +220,125 @@ This deploys the backend + admin panel to the internet for free, so you can shar
 - **Data does not persist.** Render's free web services don't support a persistent disk, so the SQLite database resets every time the service redeploys or restarts (a config change, a crash, or Render's own maintenance can all trigger this). Fine for trying the demo in one sitting; not fine for real factory data. When you're ready to actually run this for real, upgrade the backend service to a paid plan (~$7/mo) and add a persistent disk — at that point re-add a `disk:` block to `render.yaml` pointing `DATABASE_PATH` at a mounted path, the same way the very first version of this config did.
 - If the backend ever redeploys or restarts, it will automatically re-seed itself on the next boot (same default admin login, but a **new** machine API key each time) — no manual step needed, but you will need to re-copy the new machine API key into any operator app's `config.json` afterward. Set `SKIP_AUTO_SEED=1` as an env var if you ever want to disable this (e.g. once you're on a paid plan with real persistent data and don't want any automatic writes on boot).
 
-## Building a standalone .exe for the operator app
+## Backups (important on free hosting)
 
-**Set up `config.json` in the project root BEFORE building**, so the built `.exe` ships already configured:
+Render's free tier has **no persistent disk**: the database is wiped every
+time the service restarts, sleeps and wakes, or redeploys. The app re-seeds
+itself so it still starts, but everything recorded is gone. Until you move to
+a paid instance with a disk, treat backups as essential rather than optional.
 
-```powershell
-cd operator-app
-copy config.example.json config.json
-notepad config.json
+### Download one by hand
+
+Admin panel → **Backup** → *Download backup*. One JSON file containing
+machines, operators, work orders, sessions, attendance and scrap. Keep it
+somewhere that isn't the server.
+
+### Restore after a wipe
+
+Admin panel → **Backup** → pick your file under *Restore from a backup*. It
+replaces everything currently in the database, so it asks for confirmation
+first. Use it after a wipe, or to move to a new server.
+
+### Automatic hourly backups
+
+The server can't reliably back itself up — a sleeping service isn't running to
+trigger anything, and its disk doesn't survive anyway. So the pull has to come
+from a machine you control:
+
+```bash
+node backend/scripts/pull-backup.js \
+  --url https://your-app.onrender.com/api \
+  --user admin --password YOUR_PASSWORD \
+  --out ./backups --keep 48
 ```
 
-Fill in your real backend URL (with `/api` at the end) and a real machine API key from the admin panel's Machines page, save, then:
+It waits out the ~30-60s cold start of a sleeping free-tier service, saves a
+timestamped file, and prunes to the newest `--keep` files. If the server can't
+be reached it writes nothing rather than leaving a truncated file.
+
+Schedule it hourly:
+
+- **Windows** — Task Scheduler → Create Task → Trigger: daily, repeat every
+  1 hour → Action: `node C:\path\to\backend\scripts\pull-backup.js`
+- **macOS / Linux** — `crontab -e`, then:
+  ```
+  0 * * * * cd /path/to/backend && node scripts/pull-backup.js >> backup.log 2>&1
+  ```
+
+With `--keep 48` you hold two days of hourly snapshots, which is enough to
+recover from a wipe nobody noticed overnight.
+
+## Building and releasing the operator app
+
+The operator app installs from an NSIS installer and **updates itself** from
+GitHub Releases. You publish a new version once; every shop-floor PC picks it
+up on its own.
+
+### One-time setup on your build machine
+
+You need a GitHub token so electron-builder can upload the release:
 
 ```powershell
-npm install
-npm run build
+# A classic personal access token with the "repo" scope
+$env:GH_TOKEN = "ghp_xxxxxxxxxxxxxxxx"
 ```
 
-This produces `operator-app\dist\Factory Tracker 1.0.0.exe` — a single portable file, no installer, no admin rights needed. **The build automatically copies your `config.json` into `dist/` next to the `.exe`**, so the two files together are everything your friend needs — no manual copying, no extra setup on their end. Just send them both files (or zip the `dist` folder and send that).
+Create it at GitHub → Settings → Developer settings → Personal access tokens.
 
-If you ever see "Setup needed" when opening a built `.exe`, it means `config.json` didn't end up next to it — check that `config.json` existed in `operator-app/` *before* you ran `npm run build` (the copy only happens automatically during the build itself), or just copy it into `dist/` by hand:
-```powershell
-copy config.json dist\config.json
-```
+### Publishing a new version
+
+1. **Bump the version** in `operator-app/package.json` — this is what the
+   updater compares, so a release with an unchanged version is ignored:
+   ```json
+   "version": "1.0.1"
+   ```
+2. Build and publish:
+   ```powershell
+   cd operator-app
+   npm install
+   npm run build -- --publish always
+   ```
+
+That uploads the installer plus a `latest.yml` (the file the updater reads) to
+a GitHub Release. Within about six hours every running machine downloads it in
+the background; the update installs the next time that app is closed.
+
+To build without publishing — for testing — use plain `npm run build`.
+
+### Installing on a new machine
+
+1. Download and run `Factory Tracker Setup <version>.exe` from your GitHub
+   Releases page. It's a one-click, per-user install, so it needs no admin
+   password.
+2. Create the machine's `config.json` at the path the app shows on its "Setup
+   needed" screen — normally:
+   ```
+   %APPDATA%\factory-tracker-operator-app\config.json
+   ```
+   ```json
+   {
+     "apiBase": "https://your-backend.onrender.com/api",
+     "machineApiKey": "paste-this-machines-key-from-the-admin-panel",
+     "language": "en"
+   }
+   ```
+   `language` is `en`, `ar` (right-to-left), or `hi`.
+
+Upgrading from the old portable build: put the machine's existing
+`config.json` next to the installed `.exe` and launch once — the app copies it
+into the user-data folder itself and reports the path it used.
+
+### How updates behave on the floor
+
+- **Downloaded in the background**, then installed when the app is next
+  closed. The updater will never restart the app on its own, because on a
+  shop floor that could happen mid-job.
+- **`config.json` lives in user-data, not the install folder**, so an update
+  can't wipe a machine's API key or language.
+- **A failed check is silent** — the app is built to work offline, and the
+  next check simply retries.
+- The running version shows in the top bar, with a quiet note when an update
+  is staged.
 
 ## What's intentionally left for you to configure per factory
 

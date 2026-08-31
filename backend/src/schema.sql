@@ -41,11 +41,29 @@ CREATE TABLE IF NOT EXISTS operator_attendance (
 -- Scrap recorded by an operator when finishing their shift. Tied to the
 -- attendance row rather than to a session, because scrap is weighed at
 -- end of shift across whatever was run, not per individual job.
+-- Scrap codes the operator picks from, e.g. 06 = Galvanized Steel Wire
+-- Scrap, 15 = Copper Cable Scrap. Managed in the admin panel's Master
+-- lists, same as pause/stop reasons.
+CREATE TABLE IF NOT EXISTS scrap_codes (
+  id     TEXT PRIMARY KEY,
+  -- Nullable to match the pause/stop reason tables, which share the same
+  -- CRUD router; the admin UI still asks for a code in practice.
+  code   TEXT UNIQUE,
+  label  TEXT UNIQUE NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS shift_scrap (
   id             TEXT PRIMARY KEY,
   attendance_id  TEXT NOT NULL REFERENCES operator_attendance(id) ON DELETE CASCADE,
-  material_id    TEXT,          -- option_items.id when picked from the list
-  material_label TEXT NOT NULL, -- resolved label, kept so history survives list edits
+  scrap_code_id  TEXT REFERENCES scrap_codes(id),
+  -- Code and label resolved at save time, so a later edit to the code list
+  -- can't silently rewrite what an operator actually recorded.
+  scrap_code     TEXT,
+  scrap_label    TEXT,
+  -- Free text the operator types: which cable, which fault, any detail the
+  -- code alone doesn't capture.
+  description    TEXT,
   kg             REAL NOT NULL,
   recorded_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );

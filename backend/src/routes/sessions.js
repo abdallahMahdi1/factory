@@ -74,8 +74,14 @@ router.get("/export.csv", (req, res) => {
 
   const sessions = db
     .prepare(
-      `SELECT s.*, o.name as operator_name
-       FROM sessions s JOIN operators o ON o.id = s.operator_id
+      `SELECT s.*, o.name as operator_name, o.id_number as operator_id_number,
+              m.name as machine_name,
+              w.job_no as work_order_job_no, w.description as work_order_description,
+              w.process as work_order_process, w.remarks as work_order_remarks
+       FROM sessions s
+       JOIN operators o ON o.id = s.operator_id
+       JOIN machines m ON m.id = s.machine_id
+       LEFT JOIN work_orders w ON w.id = s.work_order_id
        WHERE ${clauses.join(" AND ")}
        ORDER BY s.started_at ASC`
     )
@@ -89,7 +95,14 @@ router.get("/export.csv", (req, res) => {
   // Two-row header to mirror the original sheet: a group row (Input /
   // Output / Raw Materials / ...) above the field-label row, matching how
   // the source report was laid out.
-  const fixedCols = ["Date", "Shift", "Operator", "Started", "Ended", "Status"];
+  // Column order mirrors the factory's own Production Department sheet:
+  // Machine, Shift, W.O. No., Cable Size/Description, Opr No., Process,
+  // Remarks — so an exported file drops straight into their reporting
+  // without being re-arranged first.
+  const fixedCols = [
+    "Date", "Machine", "Shift", "W.O. No.", "Cable Size/Description",
+    "Opr No.", "Process", "Remarks", "Started", "Ended", "Status",
+  ];
   const groupHeaderRow = [...fixedCols.map(() => ""), ...fields.map((f) => f.group_label || "")];
   const labelHeaderRow = [...fixedCols, ...fields.map((f) => f.label)];
 
@@ -116,8 +129,14 @@ router.get("/export.csv", (req, res) => {
       });
       rows.push([
         new Date(s.started_at).toLocaleDateString(),
-        s.shift || "",
-        s.operator_name,
+        s.machine_name,
+        // Single letter, as the sheet uses: D / N
+        s.shift ? s.shift.charAt(0).toUpperCase() : "",
+        s.work_order_job_no || "",
+        s.work_order_description || "",
+        s.operator_id_number || "",
+        s.work_order_process || "",
+        s.work_order_remarks || "",
         new Date(s.started_at).toLocaleTimeString(),
         s.ended_at ? new Date(s.ended_at).toLocaleTimeString() : "",
         s.status,

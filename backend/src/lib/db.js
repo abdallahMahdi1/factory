@@ -47,6 +47,12 @@ addColumnIfMissing("sessions", "table_rows TEXT NOT NULL DEFAULT '{}'");
 // Setup phase: NULL work_started_at means the job is still being set up.
 addColumnIfMissing("sessions", "work_started_at TEXT");
 addColumnIfMissing("sessions", "shift TEXT");
+// Scrap moved from a material dropdown to a code + free-text description,
+// matching the factory's own scrap sheet.
+addColumnIfMissing("shift_scrap", "scrap_code_id TEXT");
+addColumnIfMissing("shift_scrap", "scrap_code TEXT");
+addColumnIfMissing("shift_scrap", "scrap_label TEXT");
+addColumnIfMissing("shift_scrap", "description TEXT");
 // Published-plan tracking, used to alert operators to queue changes.
 addColumnIfMissing("machines", "plan_version INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("machines", "plan_changed_at TEXT");

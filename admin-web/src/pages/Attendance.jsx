@@ -135,7 +135,7 @@ export default function Attendance() {
       fmtTime(r.signedInAt), r.signedOutAt ? fmtTime(r.signedOutAt) : "",
       r.minutes ?? "",
       r.scrapTotalKg || 0,
-      (r.scrap || []).map((sc) => `${sc.materialLabel}: ${sc.kg}kg`).join("; "),
+      (r.scrap || []).map((sc) => `${sc.scrapCode || ""} ${sc.description || sc.scrapLabel || ""}: ${sc.kg}kg`.trim()).join("; "),
     ]);
     const esc = (v) => {
       const s = String(v ?? "");
@@ -160,7 +160,8 @@ export default function Attendance() {
     const totals = {};
     for (const r of rows) {
       for (const sc of r.scrap || []) {
-        totals[sc.materialLabel] = (totals[sc.materialLabel] || 0) + sc.kg;
+        const key = sc.scrapCode ? `${sc.scrapCode} — ${sc.scrapLabel || ""}`.trim() : (sc.scrapLabel || sc.description || "(no code)");
+        totals[key] = (totals[key] || 0) + sc.kg;
       }
     }
     return Object.entries(totals)
@@ -271,7 +272,7 @@ export default function Attendance() {
                       ? <>
                           <strong className="mono-data">{r.scrapTotalKg} kg</strong>
                           {r.scrap.map((sc, i) => (
-                            <div key={i} className="hint">{sc.materialLabel} — {sc.kg} kg</div>
+                            <div key={i} className="hint">{sc.scrapCode ? `${sc.scrapCode} — ` : ""}{sc.description || sc.scrapLabel} — {sc.kg} kg</div>
                           ))}
                         </>
                       : "—"}

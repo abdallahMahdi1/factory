@@ -15,6 +15,9 @@ let acknowledgedPlanVersion = null;
 let planAlertDismissed = false;
 // Scrap rows being entered on the end-of-shift form.
 let scrapRows = [];
+// Set when a finish attempt failed validation, so empty required cells get
+// outlined until the operator fills them.
+let showInvalidCells = false;
 // When set, render() shows this screen instead of computing one from state —
 // used for the Pause and Stop screens, which are reached FROM screen-running
 // but aren't a direct function of activeSession/currentOperator the way the
@@ -87,6 +90,25 @@ function updateSyncBar(status) {
     text.textContent = t("synced");
   }
 }
+// Shows the running version, plus a quiet note when an update is waiting.
+// Deliberately low-key: an operator can't act on it, and the install
+// happens by itself when the app is next closed.
+function renderUpdateState(u) {
+  const el = $("app-version");
+  if (!el || !u) return;
+  const v = u.currentVersion ? `v${u.currentVersion}` : "";
+  if (u.status === "ready") {
+    el.textContent = `${v} · ${t("updateReady")}`;
+    el.classList.add("update-ready");
+  } else if (u.status === "downloading") {
+    el.textContent = `${v} · ${t("updateDownloading")}${u.percent ? ` ${u.percent}%` : ""}`;
+    el.classList.remove("update-ready");
+  } else {
+    el.textContent = v;
+    el.classList.remove("update-ready");
+  }
+}
+
 function wireWindowControls() {
   $("win-minimize").addEventListener("click", () => window.api.windowMinimize());
   $("win-maximize").addEventListener("click", () => window.api.windowMaximizeToggle());
@@ -220,7 +242,7 @@ function renderQueue() {
   $("queue-tab-pending").classList.toggle("active", queueTab === "pending");
   $("queue-tab-finished").classList.toggle("active", queueTab === "finished");
   $("queue-list-pending").classList.toggle("hidden", queueTab !== "pending");
-  $("queue-list-finished").classList.toggle("hidden", queueTab !== "finished");
+  $("queue-finished-wrap").classList.toggle("hidden", queueTab !== "finished");
 
   renderPlanAlert();
 
@@ -244,9 +266,16 @@ function renderQueue() {
 
   const finished = $("queue-list-finished");
   finished.innerHTML = "";
-  const finishedItems = state.config?.workOrders?.finished || [];
+  const allFinished = state.config?.workOrders?.finished || [];
+  // Search across job number AND description — an operator may remember
+  // either "4900002080" or "5CX6.0MM2", rarely both.
+  const q = ($("finished-search")?.value || "").trim().toLowerCase();
+  const finishedItems = q
+    ? allFinished.filter((wo) =>
+        `${wo.jobNo || ""} ${wo.description || ""} ${wo.process || ""}`.toLowerCase().includes(q))
+    : allFinished;
   if (finishedItems.length === 0) {
-    finished.innerHTML = `<div class="queue-empty">${t("nothingFinished")}</div>`;
+    finished.innerHTML = `<div class="queue-empty">${q ? t("nothingMatches", { q: $("finished-search").value.trim() }) : t("nothingFinished")}</div>`;
   } else {
     finishedItems.forEach((wo, i) => {
       finished.appendChild(renderQueueItem(wo, false, i + 1));
@@ -351,14 +380,24 @@ function renderRowTable(tableEl, fields, rows, tableName, addBtn) {
     for (const field of fields) {
       const cell = document.createElement("td");
       const input = buildFieldInput(field, row[field.id]);
-      input.addEventListener("input", () => {
+
+      // After a failed finish attempt, outline the specific cells that are
+      // required and still blank, so the operator can see exactly what to
+      // fill rather than hunting through every table.
+      const isBlank = (v) => v === undefined || v === null || String(v).trim() === "";
+      const markValidity = () => {
+        const bad = showInvalidCells && field.required && isBlank(row[field.id]);
+        input.classList.toggle("invalid", bad);
+      };
+      markValidity();
+
+      const onEdit = () => {
         row[field.id] = input.value;
+        markValidity();
         scheduleRowSave(tableName);
-      });
-      input.addEventListener("change", () => {
-        row[field.id] = input.value;
-        scheduleRowSave(tableName);
-      });
+      };
+      input.addEventListener("input", onEdit);
+      input.addEventListener("change", onEdit);
       cell.appendChild(input);
       tr.appendChild(cell);
     }
@@ -631,6 +670,7 @@ async function submitStartForm(phase) {
     });
     state.activeSession = session;
     selectedWorkOrder = null;
+    showInvalidCells = false;
     render();
   } catch (err) {
     $("form-error").textContent = err.message;
@@ -712,6 +752,33 @@ function openPauseScreen() {
   render();
 }
 
+// Finds every row with a required cell left blank, across all screens.
+// Returns [{ screenKey, screenLabel, rowNumber, missing: [labels] }].
+function findIncompleteRows() {
+  const problems = [];
+  for (const screen of currentScreens()) {
+    const required = (screen.fields || []).filter((f) => f.required);
+    if (required.length === 0) continue;
+    currentRows(screen.key).forEach((row, i) => {
+      const missing = required
+        .filter((f) => {
+          const v = row[f.id];
+          return v === undefined || v === null || String(v).trim() === "";
+        })
+        .map((f) => f.label);
+      if (missing.length > 0) {
+        problems.push({
+          screenKey: screen.key,
+          screenLabel: screen.label || screen.key,
+          rowNumber: i + 1,
+          missing,
+        });
+      }
+    });
+  }
+  return problems;
+}
+
 // ---------- shift finish ----------
 // Pressing "Shift finish" opens a scrap form; signing out only happens
 // once that's submitted, so scrap and the attendance record always arrive
@@ -735,14 +802,14 @@ function renderScrapTable() {
   const tableEl = $("scrap-table");
   if (!tableEl) return;
   tableEl.innerHTML = "";
-  const materials = state.config?.scrapMaterials || [];
+  const codes = state.config?.scrapCodes || [];
 
   if (scrapRows.length === 0) {
     const tbody = document.createElement("tbody");
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.className = "table-empty";
-    td.colSpan = 4;
+    td.colSpan = 5;
     td.textContent = t("noScrapYet");
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -751,7 +818,7 @@ function renderScrapTable() {
   }
 
   const thead = document.createElement("thead");
-  thead.innerHTML = `<tr><th></th><th>${t("scrapMaterial")}</th><th>${t("scrapKg")}</th><th></th></tr>`;
+  thead.innerHTML = `<tr><th></th><th>${t("scrapCode")}</th><th>${t("scrapDescription")}</th><th>${t("scrapKg")}</th><th></th></tr>`;
   tableEl.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -763,25 +830,44 @@ function renderScrapTable() {
     idx.textContent = i + 1;
     tr.appendChild(idx);
 
-    const matCell = document.createElement("td");
+    // Code picked from the admin-managed list
+    const codeCell = document.createElement("td");
     const select = document.createElement("select");
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = "— " + t("scrapMaterial") + " —";
+    placeholder.textContent = "— " + t("scrapCode") + " —";
     select.appendChild(placeholder);
-    for (const m of materials) {
+    for (const c of codes) {
       const opt = document.createElement("option");
-      opt.value = m.id;
-      opt.textContent = m.value;
-      if (m.id === row.materialId) opt.selected = true;
+      opt.value = c.id;
+      opt.textContent = `${c.code} — ${c.label}`;
+      if (c.id === row.scrapCodeId) opt.selected = true;
       select.appendChild(opt);
     }
     select.addEventListener("change", () => {
-      row.materialId = select.value;
-      row.materialLabel = select.options[select.selectedIndex]?.textContent || "";
+      row.scrapCodeId = select.value;
+      const picked = codes.find((c) => c.id === select.value);
+      row.scrapCode = picked?.code || "";
+      row.scrapLabel = picked?.label || "";
+      // Prefill the description with the code's own wording — that's what
+      // it usually is, and the operator can still edit it for detail.
+      if (!row.description && picked) {
+        row.description = picked.label;
+        renderScrapTable();
+      }
     });
-    matCell.appendChild(select);
-    tr.appendChild(matCell);
+    codeCell.appendChild(select);
+    tr.appendChild(codeCell);
+
+    // Free-text description the operator types
+    const descCell = document.createElement("td");
+    const descInput = document.createElement("input");
+    descInput.type = "text";
+    descInput.value = row.description || "";
+    descInput.placeholder = t("scrapDescription");
+    descInput.addEventListener("input", () => { row.description = descInput.value; });
+    descCell.appendChild(descInput);
+    tr.appendChild(descCell);
 
     const kgCell = document.createElement("td");
     const kgInput = document.createElement("input");
@@ -811,16 +897,18 @@ function renderScrapTable() {
 async function confirmShiftFinish() {
   // Every row must be complete — a half-filled row means someone was
   // interrupted mid-entry, and silently dropping it would lose real scrap.
-  const incomplete = scrapRows.some((r) => !r.materialId || !(Number(r.kg) > 0));
+  const incomplete = scrapRows.some((r) => !r.scrapCodeId || !(Number(r.kg) > 0));
   if (incomplete) {
-    $("shift-finish-error").textContent = t("scrapNeedsMaterial");
+    $("shift-finish-error").textContent = t("scrapNeedsCode");
     return;
   }
   try {
     await window.api.logoutOperator({
       scrap: scrapRows.map((r) => ({
-        materialId: r.materialId,
-        materialLabel: r.materialLabel,
+        scrapCodeId: r.scrapCodeId,
+        scrapCode: r.scrapCode,
+        scrapLabel: r.scrapLabel,
+        description: r.description,
         kg: Number(r.kg),
       })),
     });
@@ -873,6 +961,24 @@ function chooseStopStatus(status) {
       $("stop-choice-error").textContent = t("addRowsBefore", { names });
       return;
     }
+
+    // Having a row isn't enough — every REQUIRED cell in every row must
+    // actually be filled. Without this an operator can add a blank row and
+    // finish the job, which is how empty records reach the reports.
+    const problems = findIncompleteRows();
+    if (problems.length > 0) {
+      showInvalidCells = true;
+      const first = problems[0];
+      $("stop-choice-error").textContent = t("fillRequiredCells", {
+        screen: first.screenLabel,
+        row: first.rowNumber,
+        fields: first.missing.join(", "),
+      });
+      // Send them back to the tables with the offending cells outlined,
+      // rather than leaving them on a dead-end error screen.
+      setTimeout(() => { screenOverride = null; render(); }, 1600);
+      return;
+    }
   }
   $("stop-choice-error").textContent = "";
   pendingStop.status = status;
@@ -900,6 +1006,7 @@ async function confirmStop() {
     });
     state.activeSession = null;
     screenOverride = null;
+    showInvalidCells = false;
     // Explicitly wait for a real push+pull before re-rendering, rather than
     // relying on the next background sync cycle (which runs fire-and-forget
     // and could leave the queue showing this job as still in_progress for
@@ -922,11 +1029,12 @@ function wireEvents() {
   $("login-input").addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
 
   $("logout-btn").addEventListener("click", openShiftFinish);
-  $("scrap-add-row-btn").addEventListener("click", () => { scrapRows.push({ materialId: "", materialLabel: "", kg: "" }); renderScrapTable(); });
+  $("scrap-add-row-btn").addEventListener("click", () => { scrapRows.push({ scrapCodeId: "", scrapCode: "", scrapLabel: "", description: "", kg: "" }); renderScrapTable(); });
   $("shift-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });
   $("shift-confirm-btn").addEventListener("click", confirmShiftFinish);
   $("queue-tab-pending").addEventListener("click", () => { queueTab = "pending"; renderQueue(); });
-  $("queue-tab-finished").addEventListener("click", () => { queueTab = "finished"; renderQueue(); });
+  $("queue-tab-finished").addEventListener("click", () => { queueTab = "finished"; renderQueue(); setTimeout(() => $("finished-search")?.focus(), 50); });
+  $("finished-search").addEventListener("input", renderQueue);
   $("queue-refresh-btn").addEventListener("click", refreshQueue);
   $("form-cancel-btn").addEventListener("click", () => { selectedWorkOrder = null; showScreen("screen-home"); });
   $("form-submit-btn").addEventListener("click", () => submitStartForm("running"));
@@ -953,6 +1061,9 @@ function wireEvents() {
   $("stop-form-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });
   $("stop-finished-btn").addEventListener("click", () => chooseStopStatus("finished"));
   $("stop-incomplete-btn").addEventListener("click", () => chooseStopStatus("incomplete"));
+
+  window.api.onUpdateState(renderUpdateState);
+  window.api.getUpdateState().then(renderUpdateState).catch(() => {});
 
   window.api.onStatusUpdate((status) => {
     state.status = status;

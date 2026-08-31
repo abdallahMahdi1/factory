@@ -50,5 +50,8 @@ function buildReasonRouter(table) {
 
 router.use("/pause-reasons", buildReasonRouter("pause_reasons"));
 router.use("/stop-reasons", buildReasonRouter("stop_reasons"));
+// Same shape as the reason lists (code + label + active), so it reuses the
+// same router rather than duplicating CRUD.
+router.use("/scrap-codes", buildReasonRouter("scrap_codes"));
 
 module.exports = router;
