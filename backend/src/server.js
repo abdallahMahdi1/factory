@@ -64,4 +64,8 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Factory Tracker API listening on http://localhost:${PORT}`);
+  // Hourly in-memory snapshots, so a recent copy is always downloadable.
+  // Not a substitute for pulling backups off the server — see
+  // scripts/pull-backup.js — since these die with the process.
+  backupRoutes.startAutoBackup();
 });

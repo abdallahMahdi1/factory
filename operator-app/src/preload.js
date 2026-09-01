@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("api", {
   windowMinimize: () => ipcRenderer.invoke("window-minimize"),
   windowMaximizeToggle: () => ipcRenderer.invoke("window-maximize-toggle"),
   windowClose: () => ipcRenderer.invoke("window-close"),
+  forceClose: () => ipcRenderer.invoke("force-close"),
+  onCloseBlocked: (cb) => ipcRenderer.on("close-blocked", (_e, info) => cb(info)),
   windowIsMaximized: () => ipcRenderer.invoke("window-is-maximized"),
   onWindowState: (callback) => ipcRenderer.on("window-state", (event, state) => callback(state)),
 });

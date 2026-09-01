@@ -131,4 +131,58 @@ router.post("/restore", restoreBodyParser, (req, res) => {
   res.json({ restored, message: "Restore complete." });
 });
 
+// ---- Automatic hourly snapshots ----
+// Kept in memory rather than on disk: on free hosting the disk is wiped
+// with the database, so a snapshot saved beside it would be lost in the
+// same event. This gives you a recent copy to download after a mistake
+// (a bad restore, a deletion) — it does NOT survive a restart, which is
+// why scripts/pull-backup.js exists to pull copies off the server.
+const SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000;
+const MAX_SNAPSHOTS = 24;
+const snapshots = [];
+
+function takeSnapshot() {
+  try {
+    const data = {};
+    const counts = {};
+    for (const table of TABLES) {
+      if (!tableExists(table)) continue;
+      const rows = db.prepare(`SELECT * FROM ${table}`).all();
+      data[table] = rows;
+      counts[table] = rows.length;
+    }
+    snapshots.unshift({ createdAt: new Date().toISOString(), counts, data });
+    if (snapshots.length > MAX_SNAPSHOTS) snapshots.length = MAX_SNAPSHOTS;
+  } catch (err) {
+    console.warn("Hourly snapshot failed:", err.message);
+  }
+}
+
+function startAutoBackup() {
+  takeSnapshot();
+  const timer = setInterval(takeSnapshot, SNAPSHOT_INTERVAL_MS);
+  // Don't hold the process open just for backups.
+  if (timer.unref) timer.unref();
+}
+
+router.get("/snapshots", (req, res) => {
+  res.json(
+    snapshots.map((s, i) => ({
+      index: i,
+      createdAt: s.createdAt,
+      totalRows: Object.values(s.counts).reduce((a, b) => a + b, 0),
+    }))
+  );
+});
+
+router.get("/snapshots/:index", (req, res) => {
+  const snap = snapshots[Number(req.params.index)];
+  if (!snap) return res.status(404).json({ error: "No snapshot at that position." });
+  const stamp = snap.createdAt.replace(/[:.]/g, "-").slice(0, 19);
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", `attachment; filename="factory-tracker-snapshot-${stamp}.json"`);
+  res.send(JSON.stringify({ formatVersion: 1, createdAt: snap.createdAt, counts: snap.counts, data: snap.data }));
+});
+
 module.exports = router;
+module.exports.startAutoBackup = startAutoBackup;

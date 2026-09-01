@@ -2,7 +2,9 @@ import React from "react";
 
 function formatClock(iso) {
   if (!iso) return "now";
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // 24-hour: "07:28" instead of "07:28 AM". Half the width, no ambiguity on
+  // a night shift, and it matches the rest of the reports.
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 function formatDuration(fromIso, toIso) {
   const start = new Date(fromIso).getTime();
@@ -22,9 +24,26 @@ export default function Timeline({ segments, pauseReasonLookup = {}, compact = f
     return <div className="hint">No activity recorded yet.</div>;
   }
 
+  // Drop segments shorter than a minute. A quick pause-and-resume produces
+  // several "0m" rows that say nothing but crowd out the ones that matter —
+  // except the last, which is the live one and must always show.
+  const meaningful = segments.filter((seg, i) => {
+    if (i === segments.length - 1 || !seg.to) return true;
+    return new Date(seg.to).getTime() - new Date(seg.from).getTime() >= 60000;
+  });
+
+  // On the dashboard card, show only the tail: the last few states are what
+  // "what's happening now" means. The full history is on the session page.
+  const MAX_COMPACT_ROWS = 4;
+  const hidden = compact ? Math.max(0, meaningful.length - MAX_COMPACT_ROWS) : 0;
+  const shown = hidden > 0 ? meaningful.slice(-MAX_COMPACT_ROWS) : meaningful;
+
   return (
     <div className={`timeline ${compact ? "compact" : ""}`}>
-      {segments.map((seg, i) => {
+      {hidden > 0 && (
+        <div className="timeline-more">+{hidden} earlier {hidden === 1 ? "step" : "steps"}</div>
+      )}
+      {shown.map((seg, i) => {
         const isOpen = !seg.to;
         const label =
           seg.type === "work"

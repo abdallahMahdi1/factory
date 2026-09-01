@@ -106,7 +106,10 @@ button, input, select { font-family: inherit; font-size: 14px; }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  /* 230px was too narrow once the card carried a timeline: a reason like
+     "Braiding spool - Rewinding machine issues" wrapped into a thin ribbon
+     one or two words wide. */
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 14px;
 }
 
@@ -214,30 +217,37 @@ tr:hover td { background: #fafbfa; }
 }
 .timeline-row {
   display: grid;
-  grid-template-columns: 10px 130px 1fr auto;
-  align-items: center;
+  /* The time column sizes to its content instead of a fixed width. It was
+     130px with nowrap text, so a longer range simply overflowed and printed
+     on top of the label next to it. */
+  grid-template-columns: 10px max-content minmax(0, 1fr) max-content;
+  align-items: start;
   gap: 10px;
   padding: 7px 4px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
 .timeline-row:last-child { border-bottom: none; }
-.timeline-dot { width: 8px; height: 8px; border-radius: 50%; }
+.timeline-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
 .timeline-dot.work { background: var(--green); }
 .timeline-dot.pause { background: var(--amber); }
 .timeline-range { color: var(--ink); white-space: nowrap; }
-.timeline-label { color: var(--muted); }
+/* min-width:0 lets a long reason wrap inside its column rather than forcing
+   the grid wider than the card. */
+.timeline-label { color: var(--muted); min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 .timeline-row.pause .timeline-label { color: var(--amber); }
-.timeline-duration { color: var(--muted); text-align: right; }
+.timeline-duration { color: var(--muted); text-align: right; white-space: nowrap; }
 .timeline-row.open .timeline-duration { color: var(--accent); font-weight: 600; }
 
 .timeline.compact .timeline-row {
-  grid-template-columns: 8px 105px 1fr auto;
+  grid-template-columns: 8px max-content minmax(0, 1fr) max-content;
   padding: 4px 2px;
+  gap: 8px;
   font-size: 12px;
   border-bottom: none;
 }
-.timeline.compact .timeline-dot { width: 6px; height: 6px; }
+.timeline.compact .timeline-dot { width: 6px; height: 6px; margin-top: 4px; }
+.timeline-more { font-size: 12px; color: var(--muted); padding: 4px 4px 0 28px; }
 
 /* ---------- Pause/stop reason list (with codes) ---------- */
 .reason-list-admin { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
@@ -330,3 +340,31 @@ tr:hover td { background: #fafbfa; }
 .timeline-row.setup .timeline-label { color: #2f6fb5; }
 .timeline-dot.setup { background: #2f6fb5; }
 .scrap-cell { min-width: 150px; font-size: 12.5px; line-height: 1.4; }
+
+/* ---------- Grouped, collapsible sidebar ---------- */
+.brand-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nav-toggle {
+  background: transparent; border: 1px solid #2c3742; color: #889299;
+  border-radius: 6px; width: 26px; height: 26px; cursor: pointer; font-size: 13px; line-height: 1;
+  flex: none;
+}
+.nav-toggle:hover { color: #fff; border-color: #3d4b58; }
+
+.nav-group { margin-bottom: 10px; }
+.nav-group-title {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: transparent; border: none; cursor: pointer; padding: 6px 12px;
+  color: #6f7a84; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; font-family: inherit;
+}
+.nav-group-title:hover { color: #aab4bd; }
+.nav-caret { display: inline-block; transition: transform 0.12s ease; font-size: 9px; }
+.nav-caret.open { transform: rotate(90deg); }
+
+/* Narrow mode: hide the labels, keep the layout usable on small screens
+   and stop a long menu pushing content off the page. */
+.nav-narrow .sidebar { width: 62px; }
+.nav-narrow .brand, .nav-narrow .nav-group-label, .nav-narrow .footer > div { display: none; }
+.nav-narrow .sidebar nav a { text-align: center; padding: 10px 4px; font-size: 11px; }
+.nav-narrow .nav-group-title { justify-content: center; padding: 6px 0; }
+.nav-narrow .footer button { width: 100%; padding: 8px 4px; font-size: 11px; }

@@ -1,6 +1,15 @@
 const jwt = require("jsonwebtoken");
 const db = require("../lib/db");
 
+// In production a missing secret must stop the server, not silently fall
+// back to a known string — anyone could then forge an admin token.
+const IS_PROD = process.env.NODE_ENV === "production";
+if (IS_PROD && !process.env.JWT_SECRET) {
+  console.error(
+    "FATAL: JWT_SECRET is not set. Set it to a long random value before running in production."
+  );
+  process.exit(1);
+}
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
 // Protects admin panel routes. Expects: Authorization: Bearer <token>

@@ -912,6 +912,15 @@ function PublishPlan({ machine, queue }) {
   }, [machine.id, queue]);
 
   async function publish() {
+    // Publishing interrupts every operator on this machine with a "plan
+    // changed" alert and blocks them starting anything until they refresh,
+    // so it asks first rather than firing on a stray click.
+    const ok = window.confirm(
+      "Send the updated queue to the operators?\n\n" +
+        "They'll see a \"Please Check - Plan Change\" alert and must refresh " +
+        "their list before they can start another job."
+    );
+    if (!ok) return;
     setBusy(true);
     setResult(null);
     try {
@@ -1134,22 +1143,27 @@ export default function Machines() {
                 </div>
               </div>
 
-              <div className="section-title">Device setup</div>
-              <div className="hint">
-                Put this machine's API key into the operator app's <code className="mono-data">config.json</code> on
-                the PC next to this machine, so the app knows which machine it is.
-              </div>
-              <div style={{ marginTop: 8, marginBottom: 20 }}>
-                {showKey ? (
-                  <code className="mono-data" style={{ background: "#f5f6f5", padding: "6px 10px", borderRadius: 6, display: "inline-block" }}>
-                    {selected.api_key}
-                  </code>
-                ) : (
-                  <button className="btn secondary" onClick={() => setShowKey(true)}>Show API key</button>
-                )}
-                {" "}
-                <button className="btn secondary" onClick={regenerateKey}>Regenerate key</button>
-              </div>
+              {/* Collapsed by default: the API key is only needed once, when
+                  setting up a PC, and having it open on every machine made
+                  this page confusing. */}
+              <details className="device-setup">
+                <summary>Device setup — this machine's API key</summary>
+                <div className="hint" style={{ margin: "8px 0" }}>
+                  Paste this into the operator app's <code className="mono-data">config.json</code> on the PC beside
+                  this machine, so the app knows which machine it is.
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  {showKey ? (
+                    <code className="mono-data" style={{ background: "#f5f6f5", padding: "6px 10px", borderRadius: 6, display: "inline-block" }}>
+                      {selected.api_key}
+                    </code>
+                  ) : (
+                    <button className="btn secondary" onClick={() => setShowKey(true)}>Show API key</button>
+                  )}
+                  {" "}
+                  <button className="btn secondary" onClick={regenerateKey}>Regenerate key</button>
+                </div>
+              </details>
 
               <WorkOrderQueue machine={selected} />
 

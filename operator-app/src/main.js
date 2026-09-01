@@ -33,18 +33,50 @@ function loadDeviceConfig() {
   const configPath = candidates.find((p) => p && fs.existsSync(p));
 
   if (!configPath) {
-    // Name the exact path rather than "next to the app": with an installer
-    // build there's no obvious folder to point at, and someone setting up a
-    // PC shouldn't have to guess.
+    // Write a template rather than only complaining: on a fresh install
+    // there IS no file to edit, and expecting someone to create JSON by
+    // hand in a hidden AppData folder is how setups go wrong. They just
+    // fill in two values and relaunch.
+    let created = false;
+    try {
+      fs.mkdirSync(path.dirname(USER_CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(
+        USER_CONFIG_PATH,
+        JSON.stringify(
+          {
+            apiBase: "https://YOUR-SERVER-ADDRESS/api",
+            machineApiKey: "PASTE-THIS-MACHINES-API-KEY-FROM-THE-ADMIN-PANEL",
+            language: "en",
+          },
+          null,
+          2
+        ) + "\n"
+      );
+      created = true;
+    } catch (err) {
+      console.warn("Could not write the config template:", err.message);
+    }
+
     throw new Error(
-      `No config.json found. Create it at:\n${USER_CONFIG_PATH}\n\n` +
-        `It needs apiBase and machineApiKey for this machine — get the key from ` +
-        `the admin panel's Machines page. See config.example.json for the format.`
+      created
+        ? `Setup file created. Open it, fill in the two values, then restart this app:\n\n` +
+          `${USER_CONFIG_PATH}\n\n` +
+          `Get the machine's API key from the admin panel: Machines -> pick this machine -> Show API key.`
+        : `No config.json found. Create it at:\n\n${USER_CONFIG_PATH}\n\n` +
+          `It needs apiBase and machineApiKey — see config.example.json.`
     );
   }
   const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
   if (!raw.apiBase || !raw.machineApiKey) {
-    throw new Error("config.json must include both apiBase and machineApiKey.");
+    throw new Error(`config.json needs both apiBase and machineApiKey.\n\n${configPath}`);
+  }
+  // Catch a template that was created but never filled in, rather than
+  // failing later with a confusing connection error.
+  if (/YOUR-SERVER-ADDRESS/i.test(raw.apiBase) || /PASTE-THIS/i.test(raw.machineApiKey)) {
+    throw new Error(
+      `The setup file still has its placeholder values. Open it, fill in your ` +
+        `server address and this machine's API key, then restart:\n\n${configPath}`
+    );
   }
 
   // Migrate a legacy config into user-data once, so the next update can't
@@ -92,6 +124,17 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+
+  // Intercept every close path while a job is open. The renderer decides
+  // what to say and whether to force it through.
+  win.on("close", (e) => {
+    if (allowClose) return;
+    const session = sessionManager && sessionManager.getActiveSession();
+    if (session) {
+      e.preventDefault();
+      win.webContents.send("close-blocked", { status: session.status });
+    }
+  });
 
   win.on("maximize", () => win.webContents.send("window-state", { maximized: true }));
   win.on("unmaximize", () => win.webContents.send("window-state", { maximized: false }));
@@ -246,5 +289,15 @@ ipcMain.handle("window-maximize-toggle", () => {
   if (win.isMaximized()) win.unmaximize();
   else win.maximize();
 });
+// Closing with a job still running would leave that job counting time on a
+// machine nobody is at, and risks losing anything typed but not yet saved.
+// The guard lives in the main process rather than only on the custom close
+// button, so it also covers Alt+F4 and closing from the taskbar.
+let allowClose = false;
+
 ipcMain.handle("window-close", () => win?.close());
+ipcMain.handle("force-close", () => {
+  allowClose = true;
+  win?.close();
+});
 ipcMain.handle("window-is-maximized", () => win?.isMaximized() || false);

@@ -147,6 +147,11 @@ export const api = {
     },
   },
 
+  auth: {
+    changePassword: (currentPassword, newPassword) =>
+      request("/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
+  },
+
   backup: {
     status: () => request("/backup/status"),
     // Downloaded via fetch rather than request() so we get the raw text to

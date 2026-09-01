@@ -140,7 +140,13 @@ function createSessionManager({ localDb, apiBase, apiKey }) {
   function updateRows({ table, rows }) {
     const session = getActiveSession();
     if (!session) throw new Error("No active job.");
-    if (table !== "start" && table !== "stop") throw new Error(`Invalid table: ${table}`);
+    // Any screen the machine defines is valid, not just the two built-ins.
+    // This used to reject custom screens, which meant their rows were never
+    // written to disk and vanished the moment the session object was
+    // replaced (e.g. on pause).
+    if (!table || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(table)) {
+      throw new Error(`Invalid table: ${table}`);
+    }
     if (!session.screenRows || typeof session.screenRows !== "object") session.screenRows = {};
     session.screenRows[table] = rows;
     localDb.setKV("active_session", session);

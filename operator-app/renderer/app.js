@@ -444,13 +444,21 @@ function scheduleRowSave(tableName) {
   clearTimeout(rowSaveTimers[tableName]);
   rowSaveTimers[tableName] = setTimeout(() => saveRows(tableName), 900);
 }
-function flushPendingRowSaves() {
+// Writes any debounced row edits immediately and RESOLVES ONLY WHEN THEY
+// ARE SAVED. Callers must await this before anything that replaces
+// state.activeSession (pause, stop, shift finish) — otherwise the
+// replacement can land before the save completes and the operator's most
+// recent typing is lost.
+async function flushPendingRowSaves() {
+  const pending = [];
   for (const table of Object.keys(rowSaveTimers)) {
     if (rowSaveTimers[table]) {
       clearTimeout(rowSaveTimers[table]);
-      saveRows(table);
+      rowSaveTimers[table] = null;
+      pending.push(saveRows(table));
     }
   }
+  await Promise.all(pending);
 }
 async function saveRows(tableName) {
   const rows = currentRows(tableName);
@@ -640,6 +648,11 @@ async function submitLogin() {
     currentOperator = operator;
     $("login-input").value = "";
     render();
+    // Pull the latest queue as the shift starts, so the operator never sees
+    // a plan the supervisor changed while the machine sat at the login
+    // screen. Fire-and-forget: if the network is down this just no-ops and
+    // the cached queue is shown, which is the offline behaviour anyway.
+    refreshQueue().catch(() => {});
   } catch (err) {
     $("login-error").textContent = err.message;
   }
@@ -732,8 +745,8 @@ function buildCodeEntryUI(containerEl, { reasons, onMatch, placeholder }) {
 }
 
 // ---------- pause screen ----------
-function openPauseScreen() {
-  flushPendingRowSaves();
+async function openPauseScreen() {
+  await flushPendingRowSaves();
   $("pause-form-machine-name").textContent = state.config?.machine?.name || "—";
   const widget = buildCodeEntryUI($("pause-reason-list"), {
     reasons: state.config?.pauseReasons || [],
@@ -930,8 +943,8 @@ function resetStopForm() {
   $("stop-choice-error").textContent = "";
   $("stop-form-title").textContent = "Job finished?";
 }
-function openStopScreen() {
-  flushPendingRowSaves();
+async function openStopScreen() {
+  await flushPendingRowSaves();
   $("stop-form-machine-name").textContent = state.config?.machine?.name || "—";
   resetStopForm();
   screenOverride = "screen-stop-form";
@@ -1061,6 +1074,13 @@ function wireEvents() {
   $("stop-form-cancel-btn").addEventListener("click", () => { screenOverride = null; render(); });
   $("stop-finished-btn").addEventListener("click", () => chooseStopStatus("finished"));
   $("stop-incomplete-btn").addEventListener("click", () => chooseStopStatus("incomplete"));
+
+  // The main process blocks a close while a job is open and tells us why;
+  // the operator gets a plain explanation and an explicit way through.
+  window.api.onCloseBlocked(() => {
+    const ok = window.confirm(t("closeBlocked"));
+    if (ok) window.api.forceClose();
+  });
 
   window.api.onUpdateState(renderUpdateState);
   window.api.getUpdateState().then(renderUpdateState).catch(() => {});

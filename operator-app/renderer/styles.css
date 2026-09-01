@@ -459,3 +459,14 @@ h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
   border-color: var(--red);
   background: rgba(199,84,80,0.10);
 }
+
+/* Setup instructions carry real line breaks and a file path — keep them
+   readable rather than collapsing everything into one run-on sentence. */
+.setup-message {
+  white-space: pre-line;
+  text-align: left;
+  max-width: 620px;
+  margin: 18px auto 0;
+  line-height: 1.6;
+  font-size: 15px;
+}

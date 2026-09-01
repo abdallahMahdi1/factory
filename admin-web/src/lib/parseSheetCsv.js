@@ -23,23 +23,52 @@ export function parseSheetCsv(text) {
   for (let i = 0; i < rows.length - 1; i++) {
     const nonEmpty = rows[i].filter((c) => c.trim()).length;
     const nextNonEmpty = rows[i + 1].filter((c) => c.trim()).length;
-    if (nonEmpty > 0 && nextNonEmpty > nonEmpty) {
+    // A real group row spans several columns (2+ groups like Input/Output).
+    // A single-cell row is a TITLE — "Production Department", a date — and
+    // treating it as a group label tags every field with it.
+    if (nonEmpty >= 2 && nextNonEmpty > nonEmpty) {
       groupRowIdx = i;
       break;
     }
   }
-  if (groupRowIdx === -1) {
-    return { fields: [], warning: "Couldn't find a header row. Paste the group row (Input/Output/...) and the field-label row right below it." };
-  }
 
-  const groupRow = rows[groupRowIdx];
-  const labelRow = rows[groupRowIdx + 1];
+  // Plenty of real sheets have ONE header row, not a group row above a
+  // label row — a daily production sheet is usually just
+  // "MACHINE | SHIFT | W.O. No. | ...". Requiring two tiers made the
+  // importer reject those outright, so fall back to treating the widest
+  // row near the top as the labels, with no groups.
+  let groupRow, labelRow;
+  if (groupRowIdx === -1) {
+    let best = { idx: -1, count: 0 };
+    const limit = Math.min(rows.length, 20);
+    for (let i = 0; i < limit; i++) {
+      // A header row is text, not numbers: ignore rows that are mostly
+      // numeric, which are data rows that happen to be wide.
+      const cells = rows[i].filter((c) => c.trim());
+      const texty = cells.filter((c) => !/^-?[\d.,]+$/.test(c.trim())).length;
+      if (texty >= 2 && texty > best.count) best = { idx: i, count: texty };
+    }
+    if (best.idx === -1) {
+      return {
+        fields: [],
+        warning:
+          "Couldn't find a header row. Make sure the sheet has a row of column names — " +
+          "either a single row, or a group row (Input/Output/...) with the field names right below it.",
+      };
+    }
+    groupRowIdx = best.idx;
+    labelRow = rows[groupRowIdx];
+    groupRow = new Array(labelRow.length).fill(""); // no groups in a flat sheet
+  } else {
+    groupRow = rows[groupRowIdx];
+    labelRow = rows[groupRowIdx + 1];
+  }
   // An optional sub-row: present when it has content but doesn't look like
   // a data row (heuristic: a data row for THIS sheet is expected to be
   // mostly empty right after headers — a real sub-row like "Main Material /
   // Aux. Material" has short, label-like text in a few of the same columns
   // the group row spans).
-  const maybeSubRow = rows[groupRowIdx + 2];
+  const maybeSubRow = groupRow.some((c) => c.trim()) ? rows[groupRowIdx + 2] : null;
   const hasSubRow =
     maybeSubRow &&
     maybeSubRow.some((c, i) => c.trim() && !labelRow[i]?.trim());

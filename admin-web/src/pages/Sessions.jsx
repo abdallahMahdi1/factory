@@ -187,8 +187,26 @@ function SessionDetail({ sessionId, fieldLookup, pauseReasonLookup, onClose, onS
     if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) return [parsed];
     return [];
   }
-  const startRows = parseRows(session.field_values);
-  const stopRows = parseRows(session.stop_field_values);
+  // Rows for EVERY screen, not just the two built-ins — a machine with a
+  // custom screen (Scrap, Performance...) would otherwise show none of it.
+  // Falls back to the original two columns for sessions recorded before
+  // per-screen storage existed.
+  const rowsByScreen = (() => {
+    let byScreen = {};
+    if (session.table_rows) {
+      try {
+        const parsed = JSON.parse(session.table_rows);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) byScreen = parsed;
+      } catch { /* fall through to the legacy columns */ }
+    }
+    for (const [key, col] of [["start", "field_values"], ["stop", "stop_field_values"]]) {
+      if (!Array.isArray(byScreen[key]) || byScreen[key].length === 0) {
+        const legacy = parseRows(session[col]);
+        if (legacy.length > 0) byScreen[key] = legacy;
+      }
+    }
+    return byScreen;
+  })();
 
   const gross = grossMinutes(session);
   const pauseTotal = pauseMinutes(session.pauses);
@@ -227,12 +245,23 @@ function SessionDetail({ sessionId, fieldLookup, pauseReasonLookup, onClose, onS
     );
   }
 
-  const startFields = Object.values(fieldLookup.fieldsById)
-    .filter((f) => f.machine_id === session.machine_id && f.stage === "start")
-    .sort((a, b) => a.sort_order - b.sort_order);
-  const stopFields = Object.values(fieldLookup.fieldsById)
-    .filter((f) => f.machine_id === session.machine_id && f.stage === "stop")
-    .sort((a, b) => a.sort_order - b.sort_order);
+  // One block per screen this machine actually has fields on, in a stable
+  // order with the built-ins first.
+  const machineFields = Object.values(fieldLookup.fieldsById)
+    .filter((f) => f.machine_id === session.machine_id);
+  const SCREEN_LABELS = { start: "Input", stop: "Output" };
+  const screenKeys = [...new Set(machineFields.map((f) => f.stage))].sort((a, b) => {
+    const rank = (k) => (k === "start" ? 0 : k === "stop" ? 1 : 2);
+    return rank(a) - rank(b) || a.localeCompare(b);
+  });
+  const screenBlocks = screenKeys.map((key) => ({
+    key,
+    // A custom screen has no stored label here, so title-case its key —
+    // "performance" reads better than "PERFORMANCE" or a raw id.
+    label: SCREEN_LABELS[key] || key.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+    fields: machineFields.filter((f) => f.stage === key).sort((a, b) => a.sort_order - b.sort_order),
+    rows: rowsByScreen[key] || [],
+  }));
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -249,11 +278,12 @@ function SessionDetail({ sessionId, fieldLookup, pauseReasonLookup, onClose, onS
         </div>
         <Timeline segments={segments} pauseReasonLookup={pauseReasonLookup} />
 
-        <div className="section-title">Input ({startRows.length} row{startRows.length === 1 ? "" : "s"})</div>
-        {renderRowsTable(startRows, startFields)}
-
-        <div className="section-title">Output ({stopRows.length} row{stopRows.length === 1 ? "" : "s"})</div>
-        {renderRowsTable(stopRows, stopFields)}
+        {screenBlocks.map((b) => (
+          <div key={b.key}>
+            <div className="section-title">{b.label} ({b.rows.length} row{b.rows.length === 1 ? "" : "s"})</div>
+            {renderRowsTable(b.rows, b.fields)}
+          </div>
+        ))}
 
         <div className="section-title">Correct this record</div>
         <div className="hint" style={{ marginBottom: 10 }}>
@@ -324,7 +354,10 @@ export default function Sessions() {
   const [machines, setMachines] = useState([]);
   const [operators, setOperators] = useState([]);
   const [optionLists, setOptionLists] = useState([]);
-  const [filters, setFilters] = useState({ machineId: "", operatorId: "", status: "", from: "", to: "" });
+  // Defaults to finished jobs: that's what a supervisor is normally
+  // reporting on, and it keeps half-finished and abandoned attempts out of
+  // the way until they're deliberately asked for.
+  const [filters, setFilters] = useState({ machineId: "", operatorId: "", status: "finished", from: "", to: "" });
   const [openId, setOpenId] = useState(null);
   const [error, setError] = useState("");
   const [pauseReasons, setPauseReasons] = useState([]);

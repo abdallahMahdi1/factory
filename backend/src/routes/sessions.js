@@ -1,7 +1,7 @@
 const express = require("express");
 const { v4: uuid } = require("uuid");
 const db = require("../lib/db");
-const { parseRows } = require("../lib/rows");
+const { parseRows, parseAllScreenRows } = require("../lib/rows");
 
 const router = express.Router();
 
@@ -77,15 +77,32 @@ router.get("/export.csv", (req, res) => {
       `SELECT s.*, o.name as operator_name, o.id_number as operator_id_number,
               m.name as machine_name,
               w.job_no as work_order_job_no, w.description as work_order_description,
-              w.process as work_order_process, w.remarks as work_order_remarks
+              w.process as work_order_process, w.remarks as work_order_remarks,
+              w.quantity as work_order_quantity, w.due_date as work_order_due_date,
+              w.input_diameter as work_order_input_diameter,
+              w.total_tolerance as work_order_total_tolerance,
+              w.special_instruction as work_order_special_instruction,
+              sr.code as stop_reason_code, sr.label as stop_reason_label
        FROM sessions s
        JOIN operators o ON o.id = s.operator_id
        JOIN machines m ON m.id = s.machine_id
        LEFT JOIN work_orders w ON w.id = s.work_order_id
+       LEFT JOIN stop_reasons sr ON sr.id = s.stop_reason_id
        WHERE ${clauses.join(" AND ")}
        ORDER BY s.started_at ASC`
     )
     .all(...params);
+
+  // All pauses for the exported sessions, fetched once rather than per row.
+  const pausesBySession = {};
+  if (sessions.length > 0) {
+    const ph = sessions.map(() => "?").join(",");
+    for (const p of db
+      .prepare(`SELECT session_id, started_at, ended_at FROM pause_events WHERE session_id IN (${ph})`)
+      .all(...sessions.map((x) => x.id))) {
+      (pausesBySession[p.session_id] ||= []).push(p);
+    }
+  }
 
   const esc = (v) => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -101,7 +118,10 @@ router.get("/export.csv", (req, res) => {
   // without being re-arranged first.
   const fixedCols = [
     "Date", "Machine", "Shift", "W.O. No.", "Cable Size/Description",
-    "Opr No.", "Process", "Remarks", "Started", "Ended", "Status",
+    "Opr No.", "Operator", "Process", "Qty", "Due date",
+    "Input dia.", "Tolerance", "Special instruction", "Remarks",
+    "Started", "Ended", "Setup (min)", "Worked (min)", "Paused (min)",
+    "Status", "Stop reason",
   ];
   const groupHeaderRow = [...fixedCols.map(() => ""), ...fields.map((f) => f.group_label || "")];
   const labelHeaderRow = [...fixedCols, ...fields.map((f) => f.label)];
@@ -116,17 +136,36 @@ router.get("/export.csv", (req, res) => {
   // correspondence in every real workflow.
   const rows = [];
   for (const s of sessions) {
-    const startRows = parseRows(s.field_values);
-    const stopRows = parseRows(s.stop_field_values);
-    const rowCount = Math.max(startRows.length, stopRows.length, 1);
+    // EVERY screen the machine defines, not just the two built-ins. Reading
+    // only field_values/stop_field_values meant any custom screen (Scrap,
+    // Toolings, a line-speed table...) exported as empty columns, because
+    // its rows live in table_rows.
+    const byScreen = parseAllScreenRows(s);
+    const screenKeys = Object.keys(byScreen);
+    const rowCount = Math.max(1, ...screenKeys.map((k) => byScreen[k].length));
 
     for (let i = 0; i < rowCount; i++) {
-      const merged = { ...(startRows[i] || {}), ...(stopRows[i] || {}) };
+      // Row i of each screen, side by side on one CSV line. Screens with
+      // fewer rows just leave their columns blank for the extra lines.
+      const merged = {};
+      for (const key of screenKeys) Object.assign(merged, byScreen[key][i] || {});
       const fieldCells = fields.map((f) => {
         const raw = merged[f.id];
         if (raw === undefined || raw === null || raw === "") return "";
         return f.type === "select" ? (optionValueById[raw] ?? raw) : raw;
       });
+      // Timing split out so a supervisor can see setup vs actual production
+      // without recomputing it from the raw timestamps.
+      const startMs = new Date(s.started_at).getTime();
+      const workMs = s.work_started_at ? new Date(s.work_started_at).getTime() : startMs;
+      const endMs = s.ended_at ? new Date(s.ended_at).getTime() : Date.now();
+      const pausedMs = (pausesBySession[s.id] || []).reduce((sum, p) => {
+        const a = new Date(p.started_at).getTime();
+        const b = p.ended_at ? new Date(p.ended_at).getTime() : endMs;
+        return sum + Math.max(0, b - a);
+      }, 0);
+      const mins = (ms) => Math.round((ms / 60000) * 10) / 10;
+
       rows.push([
         new Date(s.started_at).toLocaleDateString(),
         s.machine_name,
@@ -135,11 +174,21 @@ router.get("/export.csv", (req, res) => {
         s.work_order_job_no || "",
         s.work_order_description || "",
         s.operator_id_number || "",
+        s.operator_name || "",
         s.work_order_process || "",
+        s.work_order_quantity ?? "",
+        s.work_order_due_date || "",
+        s.work_order_input_diameter ?? "",
+        s.work_order_total_tolerance || "",
+        s.work_order_special_instruction || "",
         s.work_order_remarks || "",
         new Date(s.started_at).toLocaleTimeString(),
         s.ended_at ? new Date(s.ended_at).toLocaleTimeString() : "",
+        mins(workMs - startMs),
+        mins(Math.max(0, endMs - workMs - pausedMs)),
+        mins(pausedMs),
         s.status,
+        s.stop_reason_code ? `${s.stop_reason_code} — ${s.stop_reason_label}` : (s.stop_reason_label || ""),
         ...fieldCells,
       ]);
     }
